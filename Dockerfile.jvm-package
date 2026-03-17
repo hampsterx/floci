@@ -1,14 +1,21 @@
 FROM eclipse-temurin:25-jre-alpine
-WORKDIR /app
 
-COPY quarkus-app/ quarkus-app/
+WORKDIR /app
 
 RUN mkdir -p /app/data
 VOLUME /app/data
+
+RUN chown 1001 /app \
+    && chmod "g+rwX" /app \
+    && chown 1001:root /app
+
+COPY --chown=1001:root target/quarkus-app quarkus-app/
 
 EXPOSE 4566 6379-6399
 
 ARG VERSION=latest
 ENV FLOCI_VERSION=${VERSION}
 
-ENTRYPOINT ["java", "-jar", "quarkus-app/quarkus-run.jar"]
+USER 1001
+
+ENTRYPOINT ["java", "-jar", "quarkus-app/quarkus-run.jar", "-Dquarkus.http.host=0.0.0.0"]

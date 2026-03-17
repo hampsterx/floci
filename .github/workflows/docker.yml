@@ -103,7 +103,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: jvm-artifact
-          path: quarkus-app/
+          path: target/quarkus-app/
 
       - name: Build and push JVM image
         uses: docker/build-push-action@v6
