@@ -9,6 +9,7 @@ import io.github.hectorvent.floci.services.s3.model.Bucket;
 import io.github.hectorvent.floci.services.s3.model.GetObjectAttributesParts;
 import io.github.hectorvent.floci.services.s3.model.GetObjectAttributesResult;
 import io.github.hectorvent.floci.services.s3.model.MultipartUpload;
+import io.github.hectorvent.floci.services.s3.model.FilterRule;
 import io.github.hectorvent.floci.services.s3.model.NotificationConfiguration;
 import io.github.hectorvent.floci.services.s3.model.ObjectAttributeName;
 import io.github.hectorvent.floci.services.s3.model.QueueNotification;
@@ -30,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -848,6 +850,7 @@ public class S3Controller {
                 for (String event : qn.events()) {
                     xml.elem("Event", event);
                 }
+                appendFilterRules(xml, qn.filterRules());
                 xml.end("QueueConfiguration");
             }
             for (TopicNotification tn : config.getTopicConfigurations()) {
@@ -857,6 +860,7 @@ public class S3Controller {
                 for (String event : tn.events()) {
                     xml.elem("Event", event);
                 }
+                appendFilterRules(xml, tn.filterRules());
                 xml.end("TopicConfiguration");
             }
             xml.end("NotificationConfiguration");
@@ -871,24 +875,13 @@ public class S3Controller {
             String xml = new String(body, StandardCharsets.UTF_8);
             NotificationConfiguration config = new NotificationConfiguration();
 
-            var queueConfigs = XmlParser.extractGroupsMulti(xml, "QueueConfiguration");
-            for (var group : queueConfigs) {
-                String id = group.getOrDefault("Id", List.of("")).get(0);
-                List<String> queueArns = group.get("Queue");
-                List<String> events = group.get("Event");
-                if (queueArns != null && !queueArns.isEmpty() && events != null && !events.isEmpty()) {
-                    config.getQueueConfigurations().add(new QueueNotification(id, queueArns.get(0), events));
-                }
+            for (var parsed : parseNotificationGroups(xml, "QueueConfiguration", "Queue")) {
+                config.getQueueConfigurations().add(
+                        new QueueNotification(parsed.id, parsed.arn, parsed.events, parsed.filterRules));
             }
-
-            var topicConfigs = XmlParser.extractGroupsMulti(xml, "TopicConfiguration");
-            for (var group : topicConfigs) {
-                String id = group.getOrDefault("Id", List.of("")).get(0);
-                List<String> topicArns = group.get("Topic");
-                List<String> events = group.get("Event");
-                if (topicArns != null && !topicArns.isEmpty() && events != null && !events.isEmpty()) {
-                    config.getTopicConfigurations().add(new TopicNotification(id, topicArns.get(0), events));
-                }
+            for (var parsed : parseNotificationGroups(xml, "TopicConfiguration", "Topic")) {
+                config.getTopicConfigurations().add(
+                        new TopicNotification(parsed.id, parsed.arn, parsed.events, parsed.filterRules));
             }
 
             s3Service.putBucketNotificationConfiguration(bucket, config);
@@ -896,6 +889,44 @@ public class S3Controller {
         } catch (AwsException e) {
             return xmlErrorResponse(e);
         }
+    }
+
+    private record ParsedNotificationGroup(String id, String arn, List<String> events,
+                                            List<FilterRule> filterRules) {}
+
+    private static List<ParsedNotificationGroup> parseNotificationGroups(
+            String xml, String groupElement, String arnElement) {
+        var groups = XmlParser.extractGroupsMulti(xml, groupElement);
+        var filters = XmlParser.extractPairsPerGroup(xml, groupElement,
+                "FilterRule", "Name", "Value");
+        List<ParsedNotificationGroup> result = new ArrayList<>();
+        for (int i = 0; i < groups.size(); i++) {
+            var group = groups.get(i);
+            String id = group.getOrDefault("Id", List.of("")).getFirst();
+            List<String> arns = group.get(arnElement);
+            List<String> events = group.get("Event");
+            if (arns != null && !arns.isEmpty() && events != null && !events.isEmpty()) {
+                List<FilterRule> rules = i < filters.size()
+                        ? filters.get(i).entrySet().stream()
+                            .map(e -> new FilterRule(e.getKey(), e.getValue()))
+                            .toList()
+                        : List.of();
+                result.add(new ParsedNotificationGroup(id, arns.getFirst(), events, rules));
+            }
+        }
+        return result;
+    }
+
+    private static void appendFilterRules(XmlBuilder xml, List<FilterRule> rules) {
+        if (rules == null || rules.isEmpty()) return;
+        xml.start("Filter").start("S3Key");
+        for (FilterRule rule : rules) {
+            xml.start("FilterRule")
+               .elem("Name", rule.name())
+               .elem("Value", rule.value())
+               .end("FilterRule");
+        }
+        xml.end("S3Key").end("Filter");
     }
 
     /**
