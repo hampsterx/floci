@@ -127,3 +127,6 @@ floci:
       proxy-max-port: 9499
     ec2:
       enabled: true
+    ecs:
+      enabled: true
+      mock: false

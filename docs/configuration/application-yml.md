@@ -137,6 +137,13 @@ floci:
       default-image: "opensearchproject/opensearch:2"
       proxy-base-port: 9400
       proxy-max-port: 9499
+
+    ecs:
+      enabled: true
+      mock: false               # true = tasks go to RUNNING without Docker (useful for CI)
+      docker-network: ""        # Docker network for task containers
+      default-memory-mb: 512
+      default-cpu-units: 256
 ```
 
 ## Service Limits
@@ -152,6 +159,10 @@ floci:
 | `FLOCI_SERVICES_S3_DEFAULT_PRESIGN_EXPIRY_SECONDS` | `3600`   | Pre-signed URL expiry                                         |
 | `FLOCI_SERVICES_DYNAMODB_MAX_ITEM_SIZE`            | `400000` | Max item size (bytes)                                         |
 | `FLOCI_SERVICES_DOCKER_NETWORK`                    |          | Shared Docker network for Lambda, RDS, ElastiCache containers |
+| `FLOCI_SERVICES_ECS_MOCK`                          | `false`  | Skip Docker; tasks go straight to RUNNING (useful for CI)     |
+| `FLOCI_SERVICES_ECS_DOCKER_NETWORK`                |          | Docker network for ECS task containers                        |
+| `FLOCI_SERVICES_ECS_DEFAULT_MEMORY_MB`             | `512`    | Default memory (MB) when task definition omits it             |
+| `FLOCI_SERVICES_ECS_DEFAULT_CPU_UNITS`             | `256`    | Default CPU units when task definition omits it               |
 
 ## Disabling Services
 

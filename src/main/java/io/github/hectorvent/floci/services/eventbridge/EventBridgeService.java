@@ -1,5 +1,6 @@
 package io.github.hectorvent.floci.services.eventbridge;
 
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.core.common.AwsArnUtils;
 import io.github.hectorvent.floci.core.common.AwsException;
@@ -389,6 +390,17 @@ public class EventBridgeService {
                     }
                 }
             }
+            JsonNode resourcesPattern = pattern.get("resources");
+            if (resourcesPattern != null && resourcesPattern.isArray()) {
+                var resources = ((ArrayNode) event.get("Resources")).elements();
+                while (resources.hasNext()) {
+                    var resource = resources.next().asText(null);
+                    if (matchesArrayField(resourcesPattern, resource)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
             return true;
         } catch (Exception e) {
             LOG.warnv("Failed to parse event pattern: {0}", e.getMessage());
@@ -438,6 +450,7 @@ public class EventBridgeService {
             String source = (String) entry.getOrDefault("Source", "");
             String detailType = (String) entry.getOrDefault("DetailType", "");
             String detail = (String) entry.getOrDefault("Detail", "{}");
+            ArrayNode resources = (ArrayNode) entry.getOrDefault("Resources", objectMapper.createArrayNode());
             ObjectNode node = objectMapper.createObjectNode();
             node.put("version", "0");
             node.put("id", eventId);
@@ -446,7 +459,7 @@ public class EventBridgeService {
             node.put("account", regionResolver.getAccountId());
             node.put("time", Instant.now().toString());
             node.put("region", regionResolver.getDefaultRegion());
-            node.putArray("resources");
+            node.putArray("resources").addAll(resources);
             node.set("detail", objectMapper.readTree(detail));
             node.put("event-bus-name", busName);
             return objectMapper.writeValueAsString(node);

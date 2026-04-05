@@ -191,6 +191,7 @@ public interface EmulatorConfig {
         SesServiceConfig ses();
         OpenSearchServiceConfig opensearch();
         Ec2ServiceConfig ec2();
+        EcsServiceConfig ecs();
     }
 
     interface SsmServiceConfig {
@@ -367,6 +368,23 @@ public interface EmulatorConfig {
         int proxyMaxPort();
 
         Optional<String> dockerNetwork();
+    }
+
+    interface EcsServiceConfig {
+        @WithDefault("true")
+        boolean enabled();
+
+        /** When true, tasks go straight to RUNNING without starting real Docker containers. */
+        @WithDefault("false")
+        boolean mock();
+
+        Optional<String> dockerNetwork();
+
+        @WithDefault("512")
+        int defaultMemoryMb();
+
+        @WithDefault("256")
+        int defaultCpuUnits();
     }
 
     interface LambdaServiceConfig {
