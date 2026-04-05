@@ -253,6 +253,14 @@ public class Ec2Service {
 
     public List<Reservation> describeInstances(String region, List<String> instanceIds, Map<String, List<String>> filters) {
         ensureDefaultResources(region);
+        if (!instanceIds.isEmpty()) {
+            for (String id : instanceIds) {
+                if (instances.get(key(region, id)) == null) {
+                    throw new AwsException("InvalidInstanceID.NotFound",
+                            "The instance ID '" + id + "' does not exist", 400);
+                }
+            }
+        }
         List<Instance> matched = instances.values().stream()
                 .filter(i -> i.getRegion().equals(region))
                 .filter(i -> instanceIds.isEmpty() || instanceIds.contains(i.getInstanceId()))
@@ -397,6 +405,14 @@ public class Ec2Service {
 
     public List<Vpc> describeVpcs(String region, List<String> vpcIds, Map<String, List<String>> filters) {
         ensureDefaultResources(region);
+        if (!vpcIds.isEmpty()) {
+            for (String id : vpcIds) {
+                if (vpcs.get(key(region, id)) == null) {
+                    throw new AwsException("InvalidVpcID.NotFound",
+                            "The vpc ID '" + id + "' does not exist", 400);
+                }
+            }
+        }
         return vpcs.values().stream()
                 .filter(v -> v.getRegion().equals(region))
                 .filter(v -> vpcIds.isEmpty() || vpcIds.contains(v.getVpcId()))

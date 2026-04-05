@@ -89,4 +89,5 @@ nav:
     - CloudWatch: services/cloudwatch.md
     - ACM: services/acm.md
     - OpenSearch: services/opensearch.md
+    - EC2: services/ec2.md
   - Contributing: contributing.md

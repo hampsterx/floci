@@ -107,12 +107,32 @@ public class Ec2QueryHandler {
                 case "DescribeAccountAttributes" -> handleDescribeAccountAttributes(params, region);
                 // Instance Types
                 case "DescribeInstanceTypes" -> handleDescribeInstanceTypes(params, region);
-                default -> AwsQueryResponse.error("UnsupportedOperation",
-                        "Operation " + action + " is not supported.", AwsNamespaces.EC2, 400);
+                default -> ec2Error("UnsupportedOperation",
+                        "Operation " + action + " is not supported.", 400);
             };
         } catch (AwsException e) {
-            return AwsQueryResponse.error(e.getErrorCode(), e.getMessage(), AwsNamespaces.EC2, e.getHttpStatus());
+            return ec2Error(e.getErrorCode(), e.getMessage(), e.getHttpStatus());
         }
+    }
+
+    /**
+     * EC2 uses a different error envelope than other Query-protocol services.
+     * The AWS SDK v2 EC2 client parses {@code <Response><Errors><Error><Code>},
+     * not the standard {@code <ErrorResponse><Error><Code>} shape.
+     */
+    private Response ec2Error(String code, String message, int status) {
+        String xml = new XmlBuilder()
+                .start("Response")
+                  .start("Errors")
+                    .start("Error")
+                      .elem("Code", code)
+                      .elem("Message", message)
+                    .end("Error")
+                  .end("Errors")
+                  .elem("RequestID", UUID.randomUUID().toString())
+                .end("Response")
+                .build();
+        return Response.status(status).entity(xml).type(MediaType.APPLICATION_XML).build();
     }
 
     // ─── Parameter helpers ────────────────────────────────────────────────────
