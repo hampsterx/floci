@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -276,16 +277,38 @@ class EventBridgeSchedulerIntegrationTest {
         return new EmulatorConfig() {
             @Override
             public String baseUrl() { return "http://localhost:4566"; }
+
+            @Override
+            public Optional<String> hostname() {
+                return Optional.empty();
+            }
+
             @Override
             public String defaultRegion() { return REGION; }
             @Override
             public String defaultAccountId() { return ACCOUNT; }
+
+            @Override
+            public int maxRequestSize() {
+                return 0;
+            }
+
+            @Override
+            public String ecrBaseUri() {
+                return "";
+            }
+
             @Override
             public StorageConfig storage() { return null; }
             @Override
             public AuthConfig auth() { return null; }
             @Override
             public ServicesConfig services() { return null; }
+
+            @Override
+            public InitHooksConfig initHooks() {
+                return null;
+            }
         };
     }
 }
