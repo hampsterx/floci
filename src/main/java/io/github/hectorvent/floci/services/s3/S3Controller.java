@@ -1610,10 +1610,18 @@ public class S3Controller {
                     "Bucket POST must contain a file field.", 400);
         }
 
+        // Build a case-insensitive (lowercased) view of the form fields for policy
+        // validation, matching the behaviour of LocalStack and real AWS S3.
+        // The AWS SDK sends "Policy" (capital P) while some clients use "policy".
+        Map<String, String> lcFields = new LinkedHashMap<>(fields.size());
+        for (Map.Entry<String, String> e : fields.entrySet()) {
+            lcFields.put(e.getKey().toLowerCase(Locale.ROOT), e.getValue());
+        }
+
         // Validate policy conditions if present
-        String policy = fields.get("policy");
+        String policy = lcFields.get("policy");
         if (policy != null && !policy.isEmpty()) {
-            validatePolicyConditions(policy, bucket, fields, fileData.length);
+            validatePolicyConditions(policy, bucket, lcFields, fileData.length);
         }
 
         // Use Content-Type from form fields, fall back to file part Content-Type
@@ -1673,10 +1681,11 @@ public class S3Controller {
             String fieldName = entry.getKey();
             String expectedValue = entry.getValue().asText();
             String actualValue;
-            if ("bucket".equals(fieldName)) {
+            String lookupKey = fieldName.toLowerCase(Locale.ROOT);
+            if ("bucket".equals(lookupKey)) {
                 actualValue = bucket;
             } else {
-                actualValue = fields.get(fieldName);
+                actualValue = fields.get(lookupKey);
             }
             if (actualValue == null || !actualValue.equals(expectedValue)) {
                 throw new AwsException("AccessDenied",
@@ -1703,7 +1712,7 @@ public class S3Controller {
             String fieldRef = condition.get(1).asText();
             String expectedValue = condition.get(2).asText();
             String fieldName = fieldRef.startsWith("$") ? fieldRef.substring(1) : fieldRef;
-            String actualValue = resolveFieldValue(fieldName, bucket, fields);
+            String actualValue = resolveFieldValue(fieldName.toLowerCase(Locale.ROOT), bucket, fields);
             if (actualValue == null || !actualValue.equals(expectedValue)) {
                 throw new AwsException("AccessDenied",
                         "Invalid according to Policy: Policy Condition failed: "
@@ -1713,7 +1722,7 @@ public class S3Controller {
             String fieldRef = condition.get(1).asText();
             String prefix = condition.get(2).asText();
             String fieldName = fieldRef.startsWith("$") ? fieldRef.substring(1) : fieldRef;
-            String actualValue = resolveFieldValue(fieldName, bucket, fields);
+            String actualValue = resolveFieldValue(fieldName.toLowerCase(Locale.ROOT), bucket, fields);
             if (actualValue == null || !actualValue.startsWith(prefix)) {
                 throw new AwsException("AccessDenied",
                         "Invalid according to Policy: Policy Condition failed: "
