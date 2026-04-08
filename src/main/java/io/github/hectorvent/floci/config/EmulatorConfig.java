@@ -41,6 +41,9 @@ public interface EmulatorConfig {
     @WithDefault("512")
     int maxRequestSize();
 
+    @WithDefault("public.ecr.aws")
+    String ecrBaseUri();
+
     StorageConfig storage();
 
     AuthConfig auth();
@@ -175,6 +178,7 @@ public interface EmulatorConfig {
         ElastiCacheServiceConfig elasticache();
         RdsServiceConfig rds();
         EventBridgeServiceConfig eventbridge();
+        SchedulerServiceConfig scheduler();
         CloudWatchLogsServiceConfig cloudwatchlogs();
         CloudWatchMetricsServiceConfig cloudwatchmetrics();
         SecretsManagerServiceConfig secretsmanager();
@@ -187,6 +191,8 @@ public interface EmulatorConfig {
         AcmServiceConfig acm();
         SesServiceConfig ses();
         OpenSearchServiceConfig opensearch();
+        Ec2ServiceConfig ec2();
+        EcsServiceConfig ecs();
     }
 
     interface SsmServiceConfig {
@@ -281,6 +287,11 @@ public interface EmulatorConfig {
         boolean enabled();
     }
 
+    interface SchedulerServiceConfig {
+        @WithDefault("true")
+        boolean enabled();
+    }
+
     interface CloudWatchLogsServiceConfig {
         @WithDefault("true")
         boolean enabled();
@@ -365,6 +376,23 @@ public interface EmulatorConfig {
         Optional<String> dockerNetwork();
     }
 
+    interface EcsServiceConfig {
+        @WithDefault("true")
+        boolean enabled();
+
+        /** When true, tasks go straight to RUNNING without starting real Docker containers. */
+        @WithDefault("false")
+        boolean mock();
+
+        Optional<String> dockerNetwork();
+
+        @WithDefault("512")
+        int defaultMemoryMb();
+
+        @WithDefault("256")
+        int defaultCpuUnits();
+    }
+
     interface LambdaServiceConfig {
         @WithDefault("true")
         boolean enabled();
@@ -402,8 +430,13 @@ public interface EmulatorConfig {
         Optional<String> dockerNetwork();
     }
 
+    interface Ec2ServiceConfig {
+        @WithDefault("true")
+        boolean enabled();
+    }
+
     interface InitHooksConfig {
-        @WithDefault("/bin/bash")
+        @WithDefault("/bin/sh")
         String shellExecutable();
 
         @WithDefault("2")

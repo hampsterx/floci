@@ -95,7 +95,13 @@ public class DynamoDbJsonHandler {
                                 ks.path("AttributeName").asText(),
                                 ks.path("KeyType").asText())));
                 String projectionType = gsiNode.path("Projection").path("ProjectionType").asText("ALL");
-                gsis.add(new GlobalSecondaryIndex(indexName, gsiKeySchema, null, projectionType));
+                GlobalSecondaryIndex gsi = new GlobalSecondaryIndex(indexName, gsiKeySchema, null, projectionType);
+                JsonNode gsiPt = gsiNode.path("ProvisionedThroughput");
+                if (!gsiPt.isMissingNode()) {
+                    gsi.getProvisionedThroughput().setReadCapacityUnits(gsiPt.path("ReadCapacityUnits").asLong(0));
+                    gsi.getProvisionedThroughput().setWriteCapacityUnits(gsiPt.path("WriteCapacityUnits").asLong(0));
+                }
+                gsis.add(gsi);
             }
         }
 
@@ -282,12 +288,14 @@ public class DynamoDbJsonHandler {
         String filterExpr = request.has("FilterExpression")
                 ? request.get("FilterExpression").asText() : null;
         Integer limit = request.has("Limit") ? request.get("Limit").asInt() : null;
+        Boolean scanIndexForward = request.has("ScanIndexForward")
+                ? request.get("ScanIndexForward").asBoolean() : null;
         String indexName = request.has("IndexName") ? request.get("IndexName").asText() : null;
         JsonNode exclusiveStartKey = request.has("ExclusiveStartKey")
                 ? request.get("ExclusiveStartKey") : null;
 
         DynamoDbService.QueryResult result = dynamoDbService.query(tableName, keyConditions,
-                exprAttrValues, keyConditionExpr, filterExpr, limit, indexName,
+                exprAttrValues, keyConditionExpr, filterExpr, limit, scanIndexForward, indexName,
                 exclusiveStartKey, exprAttrNames, region);
 
         ObjectNode response = objectMapper.createObjectNode();
@@ -310,12 +318,14 @@ public class DynamoDbJsonHandler {
                 ? request.get("ExpressionAttributeNames") : null;
         JsonNode exprAttrValues = request.has("ExpressionAttributeValues")
                 ? request.get("ExpressionAttributeValues") : null;
+        JsonNode scanFilter = request.has("ScanFilter")
+                ? request.get("ScanFilter") : null;
         Integer limit = request.has("Limit") ? request.get("Limit").asInt() : null;
         JsonNode exclusiveStartKey = request.has("ExclusiveStartKey")
                 ? request.get("ExclusiveStartKey") : null;
 
         DynamoDbService.ScanResult result = dynamoDbService.scan(
-                tableName, filterExpr, exprAttrNames, exprAttrValues, limit, exclusiveStartKey, region);
+                tableName, filterExpr, exprAttrNames, exprAttrValues, scanFilter, limit, exclusiveStartKey, region);
 
         ObjectNode response = objectMapper.createObjectNode();
         ArrayNode itemsArray = objectMapper.createArrayNode();
@@ -392,7 +402,47 @@ public class DynamoDbJsonHandler {
             writeCapacity = pt.has("WriteCapacityUnits") ? pt.get("WriteCapacityUnits").asLong() : null;
         }
 
-        TableDefinition table = dynamoDbService.updateTable(tableName, readCapacity, writeCapacity, region);
+        List<GlobalSecondaryIndex> gsiCreates = new ArrayList<>();
+        List<String> gsiDeletes = new ArrayList<>();
+        JsonNode gsiUpdates = request.path("GlobalSecondaryIndexUpdates");
+        if (!gsiUpdates.isMissingNode() && gsiUpdates.isArray()) {
+            for (JsonNode update : gsiUpdates) {
+                JsonNode createNode = update.path("Create");
+                if (!createNode.isMissingNode()) {
+                    String indexName = createNode.path("IndexName").asText();
+                    List<KeySchemaElement> gsiKeySchema = new ArrayList<>();
+                    createNode.path("KeySchema").forEach(ks ->
+                            gsiKeySchema.add(new KeySchemaElement(
+                                    ks.path("AttributeName").asText(),
+                                    ks.path("KeyType").asText())));
+                    String projectionType = createNode.path("Projection").path("ProjectionType").asText("ALL");
+                    GlobalSecondaryIndex newGsi = new GlobalSecondaryIndex(indexName, gsiKeySchema, null, projectionType);
+                    JsonNode newGsiPt = createNode.path("ProvisionedThroughput");
+                    if (!newGsiPt.isMissingNode()) {
+                        newGsi.getProvisionedThroughput().setReadCapacityUnits(newGsiPt.path("ReadCapacityUnits").asLong(0));
+                        newGsi.getProvisionedThroughput().setWriteCapacityUnits(newGsiPt.path("WriteCapacityUnits").asLong(0));
+                    }
+                    gsiCreates.add(newGsi);
+                }
+                JsonNode deleteNode = update.path("Delete");
+                if (!deleteNode.isMissingNode()) {
+                    gsiDeletes.add(deleteNode.path("IndexName").asText());
+                }
+            }
+        }
+
+        List<AttributeDefinition> newAttrDefs = new ArrayList<>();
+        JsonNode attrDefsNode = request.path("AttributeDefinitions");
+        if (!attrDefsNode.isMissingNode() && attrDefsNode.isArray()) {
+            for (JsonNode ad : attrDefsNode) {
+                newAttrDefs.add(new AttributeDefinition(
+                        ad.path("AttributeName").asText(),
+                        ad.path("AttributeType").asText()));
+            }
+        }
+
+        TableDefinition table = dynamoDbService.updateTable(tableName, readCapacity, writeCapacity,
+                gsiCreates, gsiDeletes, newAttrDefs, region);
 
         String billingMode = request.has("BillingMode")
                 ? request.get("BillingMode").asText() : null;
@@ -616,6 +666,14 @@ public class DynamoDbJsonHandler {
                 projection.put("ProjectionType",
                         gsi.getProjectionType() != null ? gsi.getProjectionType() : "ALL");
                 gsiNode.set("Projection", projection);
+
+                ObjectNode gsiPt = objectMapper.createObjectNode();
+                gsiPt.put("ReadCapacityUnits", gsi.getProvisionedThroughput().getReadCapacityUnits());
+                gsiPt.put("WriteCapacityUnits", gsi.getProvisionedThroughput().getWriteCapacityUnits());
+                gsiPt.put("NumberOfDecreasesToday", gsi.getProvisionedThroughput().getNumberOfDecreasesToday());
+                gsiNode.set("ProvisionedThroughput", gsiPt);
+                gsiNode.put("IndexSizeBytes", gsi.getIndexSizeBytes());
+                gsiNode.put("ItemCount", gsi.getItemCount());
 
                 gsiArray.add(gsiNode);
             }

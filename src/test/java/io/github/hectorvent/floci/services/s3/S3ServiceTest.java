@@ -112,7 +112,7 @@ class S3ServiceTest {
         byte[] data = "file content".getBytes(StandardCharsets.UTF_8);
         s3Service.putObject("test-bucket", "docs/readme.txt", data, "text/plain", null);
 
-        Path filePath = tempDir.resolve("s3/test-bucket/docs/readme.txt");
+        Path filePath = tempDir.resolve("s3/test-bucket/docs/readme.txt.s3data");
         assertTrue(Files.exists(filePath));
         assertArrayEquals(data, assertDoesNotThrow(() -> Files.readAllBytes(filePath)));
     }
@@ -122,7 +122,7 @@ class S3ServiceTest {
         s3Service.createBucket("test-bucket", "us-east-1");
         s3Service.putObject("test-bucket", "file.txt", "data".getBytes(), null, null);
 
-        Path filePath = tempDir.resolve("s3/test-bucket/file.txt");
+        Path filePath = tempDir.resolve("s3/test-bucket/file.txt.s3data");
         assertTrue(Files.exists(filePath));
 
         s3Service.deleteObject("test-bucket", "file.txt");
@@ -178,6 +178,43 @@ class S3ServiceTest {
     }
 
     @Test
+    void listObjectsWithDelimiterReturnsCommonPrefixes() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+        s3Service.putObject("test-bucket", "docs/a.txt", "a".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "docs/sub/deep.txt", "d".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "images/pic.jpg", "img".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "root.txt", "r".getBytes(), null, null);
+
+        S3Service.ListObjectsResult result = s3Service.listObjectsWithPrefixes("test-bucket", null, "/", 1000);
+        List<String> rootKeys = result.objects().stream().map(S3Object::getKey).toList();
+        assertEquals(List.of("root.txt"), rootKeys);
+        assertEquals(List.of("docs/", "images/"), result.commonPrefixes());
+        assertFalse(result.isTruncated());
+
+        S3Service.ListObjectsResult docsResult = s3Service.listObjectsWithPrefixes("test-bucket", "docs/", "/", 1000);
+        List<String> docKeys = docsResult.objects().stream().map(S3Object::getKey).toList();
+        assertEquals(List.of("docs/a.txt"), docKeys);
+        assertEquals(List.of("docs/sub/"), docsResult.commonPrefixes());
+        assertFalse(docsResult.isTruncated());
+    }
+
+    @Test
+    void listObjectsWithDelimiterRespectsMaxKeysAcrossObjectsAndPrefixes() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+        s3Service.putObject("test-bucket", "a.txt", "a".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "b.txt", "b".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "dir1/file.txt", "f1".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "dir2/file.txt", "f2".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "dir3/file.txt", "f3".getBytes(), null, null);
+
+        S3Service.ListObjectsResult result = s3Service.listObjectsWithPrefixes("test-bucket", null, "/", 3);
+
+        int totalReturned = result.objects().size() + result.commonPrefixes().size();
+        assertEquals(3, totalReturned, "combined objects + commonPrefixes must not exceed maxKeys");
+        assertTrue(result.isTruncated(), "result should be truncated when maxKeys < total entries");
+    }
+
+    @Test
     void listObjectsInNonExistentBucketThrows() {
         assertThrows(AwsException.class, () ->
                 s3Service.listObjects("nonexistent", null, null, 100));
@@ -195,8 +232,7 @@ class S3ServiceTest {
         S3Object retrieved = s3Service.getObject("dest-bucket", "copy.txt");
         assertArrayEquals("content".getBytes(), retrieved.getData());
 
-        // Verify file exists on disk for the copy
-        assertTrue(Files.exists(tempDir.resolve("s3/dest-bucket/copy.txt")));
+        assertTrue(Files.exists(tempDir.resolve("s3/dest-bucket/copy.txt.s3data")));
     }
 
     @Test
@@ -265,6 +301,52 @@ class S3ServiceTest {
     }
 
     @Test
+    void putObjectKeyOverlappingWithPrefixDoesNotConflict() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+
+        byte[] childData = "parquet-partition".getBytes(StandardCharsets.UTF_8);
+        s3Service.putObject("test-bucket", "output.parquet/part-0001.parquet", childData, "application/octet-stream", null);
+
+        byte[] markerData = new byte[0];
+        assertDoesNotThrow(() ->
+                s3Service.putObject("test-bucket", "output.parquet", markerData, "application/x-directory", null));
+
+        S3Object child = s3Service.getObject("test-bucket", "output.parquet/part-0001.parquet");
+        assertArrayEquals(childData, child.getData());
+
+        S3Object marker = s3Service.getObject("test-bucket", "output.parquet");
+        assertArrayEquals(markerData, marker.getData());
+
+        Path bucketDir = tempDir.resolve("s3/test-bucket");
+        assertTrue(Files.isDirectory(bucketDir.resolve("output.parquet")));
+        assertTrue(Files.isRegularFile(bucketDir.resolve("output.parquet.s3data")));
+        assertTrue(Files.isRegularFile(bucketDir.resolve("output.parquet/part-0001.parquet.s3data")));
+    }
+
+    @Test
+    void putObjectMarkerFirstThenChildDoesNotConflict() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+
+        byte[] markerData = new byte[0];
+        s3Service.putObject("test-bucket", "output.parquet", markerData, "application/x-directory", null);
+
+        byte[] childData = "parquet-partition".getBytes(StandardCharsets.UTF_8);
+        assertDoesNotThrow(() ->
+                s3Service.putObject("test-bucket", "output.parquet/part-0001.parquet", childData, "application/octet-stream", null));
+
+        S3Object marker = s3Service.getObject("test-bucket", "output.parquet");
+        assertArrayEquals(markerData, marker.getData());
+
+        S3Object child = s3Service.getObject("test-bucket", "output.parquet/part-0001.parquet");
+        assertArrayEquals(childData, child.getData());
+
+        Path bucketDir = tempDir.resolve("s3/test-bucket");
+        assertTrue(Files.isRegularFile(bucketDir.resolve("output.parquet.s3data")));
+        assertTrue(Files.isDirectory(bucketDir.resolve("output.parquet")));
+        assertTrue(Files.isRegularFile(bucketDir.resolve("output.parquet/part-0001.parquet.s3data")));
+    }
+
+    @Test
     void copyObjectCanReplaceMetadata() {
         s3Service.createBucket("source-bucket", "us-east-1");
         s3Service.createBucket("dest-bucket", "us-east-1");
@@ -277,5 +359,55 @@ class S3ServiceTest {
         assertEquals("application/json", copy.getContentType());
         assertEquals("STANDARD_IA", copy.getStorageClass());
         assertEquals("dest", copy.getMetadata().get("owner"));
+    }
+
+    @Test
+    void copyObjectWithNonASCIIKey() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+        String nonASCIIKey = "src/テスト画像.png";
+        s3Service.putObject("test-bucket", nonASCIIKey, "image-data".getBytes(), "image/png", null);
+
+        String destKey = "dst/テスト画像.png";
+        S3Object copy = s3Service.copyObject("test-bucket", nonASCIIKey, "test-bucket", destKey);
+        assertNotNull(copy.getETag());
+
+        S3Object retrieved = s3Service.getObject("test-bucket", destKey);
+        assertArrayEquals("image-data".getBytes(), retrieved.getData());
+    }
+
+    @Test
+    void listObjectsWithStartAfterFiltersResults() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+        s3Service.putObject("test-bucket", "a.txt", "a".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "b.txt", "b".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "c.txt", "c".getBytes(), null, null);
+
+        S3Service.ListObjectsResult result = s3Service.listObjectsWithPrefixes(
+                "test-bucket", null, null, 1000, null, "a.txt");
+        List<String> keys = result.objects().stream().map(S3Object::getKey).toList();
+        assertEquals(List.of("b.txt", "c.txt"), keys);
+        assertFalse(result.isTruncated());
+    }
+
+    @Test
+    void listObjectsWithContinuationTokenPaginates() {
+        s3Service.createBucket("test-bucket", "us-east-1");
+        s3Service.putObject("test-bucket", "a.txt", "a".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "b.txt", "b".getBytes(), null, null);
+        s3Service.putObject("test-bucket", "c.txt", "c".getBytes(), null, null);
+
+        // First page
+        S3Service.ListObjectsResult page1 = s3Service.listObjectsWithPrefixes(
+                "test-bucket", null, null, 2, null, null);
+        assertEquals(2, page1.objects().size());
+        assertTrue(page1.isTruncated());
+        assertNotNull(page1.nextContinuationToken());
+
+        // Second page using the token
+        S3Service.ListObjectsResult page2 = s3Service.listObjectsWithPrefixes(
+                "test-bucket", null, null, 2, page1.nextContinuationToken(), null);
+        assertEquals(1, page2.objects().size());
+        assertFalse(page2.isTruncated());
+        assertEquals("c.txt", page2.objects().get(0).getKey());
     }
 }

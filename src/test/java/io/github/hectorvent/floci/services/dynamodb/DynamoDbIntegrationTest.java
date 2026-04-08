@@ -1,9 +1,7 @@
 package io.github.hectorvent.floci.services.dynamodb;
 
+import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
-import io.restassured.RestAssured;
-import io.restassured.config.EncoderConfig;
-import io.restassured.http.ContentType;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -21,9 +19,7 @@ class DynamoDbIntegrationTest {
 
     @BeforeAll
     static void configureRestAssured() {
-        RestAssured.config = RestAssured.config().encoderConfig(
-                EncoderConfig.encoderConfig()
-                        .encodeContentTypeAs(DYNAMODB_CONTENT_TYPE, ContentType.TEXT));
+        RestAssuredJsonUtils.configureAwsContentTypes();
     }
 
     @Test
@@ -76,6 +72,66 @@ class DynamoDbIntegrationTest {
         .then()
             .statusCode(400)
             .body("__type", equalTo("ResourceInUseException"));
+    }
+
+    @Test
+    void createTableWithGsiAndLsi() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.CreateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "IndexTable",
+                    "KeySchema": [
+                        {"AttributeName": "pk", "KeyType": "HASH"},
+                        {"AttributeName": "sk", "KeyType": "RANGE"}
+                    ],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "pk", "AttributeType": "S"},
+                        {"AttributeName": "sk", "AttributeType": "S"},
+                        {"AttributeName": "gsiPk", "AttributeType": "S"}
+                    ],
+                    "GlobalSecondaryIndexes": [
+                        {
+                            "IndexName": "gsi-1",
+                            "KeySchema": [
+                                {"AttributeName": "gsiPk", "KeyType": "HASH"},
+                                {"AttributeName": "sk", "KeyType": "RANGE"}
+                            ],
+                            "Projection": {"ProjectionType": "ALL"}
+                        }
+                    ],
+                    "LocalSecondaryIndexes": [
+                        {
+                            "IndexName": "lsi-1",
+                            "KeySchema": [
+                                {"AttributeName": "pk", "KeyType": "HASH"},
+                                {"AttributeName": "gsiPk", "KeyType": "RANGE"}
+                            ],
+                            "Projection": {"ProjectionType": "KEYS_ONLY"}
+                        }
+                    ]
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("TableDescription.GlobalSecondaryIndexes.size()", equalTo(1))
+            .body("TableDescription.GlobalSecondaryIndexes[0].IndexName", equalTo("gsi-1"))
+            .body("TableDescription.LocalSecondaryIndexes.size()", equalTo(1))
+            .body("TableDescription.LocalSecondaryIndexes[0].IndexName", equalTo("lsi-1"));
+
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.DeleteTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {"TableName": "IndexTable"}
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
     }
 
     @Test
@@ -251,6 +307,58 @@ class DynamoDbIntegrationTest {
 
     @Test
     @Order(11)
+    void queryWithBetweenOnSortKey() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.Query")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "TestTable",
+                    "KeyConditionExpression": "pk = :pk AND sk BETWEEN :from AND :to",
+                    "ExpressionAttributeValues": {
+                        ":pk": {"S": "user-1"},
+                        ":from": {"S": "order-001"},
+                        ":to": {"S": "order-002"}
+                    }
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Count", equalTo(2))
+            .body("Items[0].sk.S", equalTo("order-001"))
+            .body("Items[1].sk.S", equalTo("order-002"));
+    }
+
+    @Test
+    @Order(12)
+    void queryWithScanIndexForwardFalse() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.Query")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "TestTable",
+                    "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
+                    "ScanIndexForward": false,
+                    "ExpressionAttributeValues": {
+                        ":pk": {"S": "user-1"},
+                        ":prefix": {"S": "order"}
+                    }
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Count", equalTo(2))
+            .body("Items[0].sk.S", equalTo("order-002"))
+            .body("Items[1].sk.S", equalTo("order-001"));
+    }
+
+    @Test
+    @Order(13)
     void queryWithFilterExpression() {
         given()
             .header("X-Amz-Target", "DynamoDB_20120810.Query")
@@ -276,7 +384,7 @@ class DynamoDbIntegrationTest {
     }
 
     @Test
-    @Order(12)
+    @Order(14)
     void queryWithFilterExpressionAndLimitReturnsLastEvaluatedKey() {
         given()
             .header("X-Amz-Target", "DynamoDB_20120810.Query")
@@ -305,7 +413,7 @@ class DynamoDbIntegrationTest {
     }
 
     @Test
-    @Order(13)
+    @Order(15)
     void scan() {
         given()
             .header("X-Amz-Target", "DynamoDB_20120810.Scan")
@@ -322,7 +430,57 @@ class DynamoDbIntegrationTest {
     }
 
     @Test
-    @Order(14)
+    @Order(16)
+    void scanWithScanFilter() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.Scan")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "TestTable",
+                    "ScanFilter": {
+                        "name": {
+                            "AttributeValueList": [{"S": "Alice"}],
+                            "ComparisonOperator": "EQ"
+                        }
+                    }
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Count", equalTo(1))
+            .body("Items[0].name.S", equalTo("Alice"));
+    }
+
+    @Test
+    @Order(17)
+    void scanWithScanFilterGE() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.Scan")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "TestTable",
+                    "ScanFilter": {
+                        "age": {
+                            "AttributeValueList": [{"N": "30"}],
+                            "ComparisonOperator": "GE"
+                        }
+                    }
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Count", equalTo(1))
+            .body("Items[0].name.S", equalTo("Alice"));
+    }
+
+    @Test
+    @Order(18)
     void deleteItem() {
         given()
             .header("X-Amz-Target", "DynamoDB_20120810.DeleteItem")
@@ -361,8 +519,208 @@ class DynamoDbIntegrationTest {
             .body("Item", nullValue());
     }
 
+    // --- UpdateTable GSI tests (separate table to avoid key schema conflicts) ---
+
     @Test
-    @Order(15)
+    @Order(19)
+    void createTableForGsiTests() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.CreateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "GsiTestTable",
+                    "KeySchema": [
+                        {"AttributeName": "pk", "KeyType": "HASH"}
+                    ],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "pk", "AttributeType": "S"}
+                    ],
+                    "BillingMode": "PAY_PER_REQUEST"
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("TableDescription.TableName", equalTo("GsiTestTable"))
+            .body("TableDescription.GlobalSecondaryIndexes", nullValue());
+    }
+
+    @Test
+    @Order(20)
+    void updateTableAddGsi() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "GsiTestTable",
+                    "AttributeDefinitions": [
+                        {"AttributeName": "pk", "AttributeType": "S"},
+                        {"AttributeName": "gsiPk", "AttributeType": "S"},
+                        {"AttributeName": "gsiSk", "AttributeType": "S"}
+                    ],
+                    "GlobalSecondaryIndexUpdates": [
+                        {
+                            "Create": {
+                                "IndexName": "TestGsi",
+                                "KeySchema": [
+                                    {"AttributeName": "gsiPk", "KeyType": "HASH"},
+                                    {"AttributeName": "gsiSk", "KeyType": "RANGE"}
+                                ],
+                                "Projection": {"ProjectionType": "ALL"}
+                            }
+                        }
+                    ]
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("TableDescription.GlobalSecondaryIndexes.size()", equalTo(1))
+            .body("TableDescription.GlobalSecondaryIndexes[0].IndexName", equalTo("TestGsi"))
+            .body("TableDescription.GlobalSecondaryIndexes[0].IndexStatus", equalTo("ACTIVE"))
+            .body("TableDescription.GlobalSecondaryIndexes[0].KeySchema.size()", equalTo(2))
+            .body("TableDescription.GlobalSecondaryIndexes[0].Projection.ProjectionType", equalTo("ALL"));
+    }
+
+    @Test
+    @Order(21)
+    void describeTableReturnsGsi() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.DescribeTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {"TableName": "GsiTestTable"}
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Table.GlobalSecondaryIndexes.size()", equalTo(1))
+            .body("Table.GlobalSecondaryIndexes[0].IndexName", equalTo("TestGsi"))
+            .body("Table.GlobalSecondaryIndexes[0].IndexStatus", equalTo("ACTIVE"))
+            .body("Table.GlobalSecondaryIndexes[0].IndexArn", containsString("/index/TestGsi"))
+            .body("Table.GlobalSecondaryIndexes[0].ProvisionedThroughput", notNullValue())
+            .body("Table.GlobalSecondaryIndexes[0].ProvisionedThroughput.ReadCapacityUnits", equalTo(0))
+            .body("Table.GlobalSecondaryIndexes[0].ProvisionedThroughput.WriteCapacityUnits", equalTo(0))
+            .body("Table.GlobalSecondaryIndexes[0].ProvisionedThroughput.NumberOfDecreasesToday", equalTo(0))
+            .body("Table.GlobalSecondaryIndexes[0].IndexSizeBytes", equalTo(0))
+            .body("Table.GlobalSecondaryIndexes[0].ItemCount", equalTo(0))
+            .body("Table.AttributeDefinitions.size()", equalTo(3));
+    }
+
+    @Test
+    @Order(22)
+    void updateTableAddGsiWithKeysOnlyProjection() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "GsiTestTable",
+                    "AttributeDefinitions": [
+                        {"AttributeName": "pk", "AttributeType": "S"},
+                        {"AttributeName": "gsiPk", "AttributeType": "S"},
+                        {"AttributeName": "gsiSk", "AttributeType": "S"},
+                        {"AttributeName": "owner", "AttributeType": "S"}
+                    ],
+                    "GlobalSecondaryIndexUpdates": [
+                        {
+                            "Create": {
+                                "IndexName": "OwnerIndex",
+                                "KeySchema": [
+                                    {"AttributeName": "owner", "KeyType": "HASH"},
+                                    {"AttributeName": "pk", "KeyType": "RANGE"}
+                                ],
+                                "Projection": {"ProjectionType": "KEYS_ONLY"}
+                            }
+                        }
+                    ]
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("TableDescription.GlobalSecondaryIndexes.size()", equalTo(2))
+            .body("TableDescription.GlobalSecondaryIndexes.find { it.IndexName == 'OwnerIndex' }.IndexStatus", equalTo("ACTIVE"))
+            .body("TableDescription.GlobalSecondaryIndexes.find { it.IndexName == 'OwnerIndex' }.Projection.ProjectionType", equalTo("KEYS_ONLY"));
+    }
+
+    @Test
+    @Order(23)
+    void updateTableDeleteGsi() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "GsiTestTable",
+                    "GlobalSecondaryIndexUpdates": [
+                        {
+                            "Delete": {
+                                "IndexName": "TestGsi"
+                            }
+                        }
+                    ]
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("TableDescription.GlobalSecondaryIndexes.size()", equalTo(1))
+            .body("TableDescription.GlobalSecondaryIndexes[0].IndexName", equalTo("OwnerIndex"));
+    }
+
+    @Test
+    @Order(24)
+    void updateTableDeleteAllGsis() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "GsiTestTable",
+                    "GlobalSecondaryIndexUpdates": [
+                        {
+                            "Delete": {
+                                "IndexName": "OwnerIndex"
+                            }
+                        }
+                    ]
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("TableDescription.GlobalSecondaryIndexes", nullValue());
+    }
+
+    @Test
+    @Order(25)
+    void describeTableAfterAllGsisDeletion() {
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.DescribeTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {"TableName": "GsiTestTable"}
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Table.GlobalSecondaryIndexes", nullValue());
+    }
+
+    // --- Cleanup ---
+
+    @Test
+    @Order(26)
     void deleteTable() {
         given()
             .header("X-Amz-Target", "DynamoDB_20120810.DeleteTable")
@@ -388,6 +746,89 @@ class DynamoDbIntegrationTest {
         .then()
             .statusCode(400)
             .body("__type", equalTo("ResourceNotFoundException"));
+    }
+
+    @Test
+    @Order(27)
+    void updateItemListAppend() {
+        // Create a table for this test
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.CreateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "ListAppendTable",
+                    "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                    "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}],
+                    "BillingMode": "PAY_PER_REQUEST"
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        // Put item with initial list
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.PutItem")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "ListAppendTable",
+                    "Item": {"pk": {"S": "k1"}, "items": {"L": [{"S": "a"}]}}
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        // Append to list
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateItem")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "ListAppendTable",
+                    "Key": {"pk": {"S": "k1"}},
+                    "UpdateExpression": "SET items = list_append(items, :val)",
+                    "ExpressionAttributeValues": {":val": {"L": [{"S": "b"}]}}
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
+
+        // Verify both elements present
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.GetItem")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "ListAppendTable",
+                    "Key": {"pk": {"S": "k1"}}
+                }
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200)
+            .body("Item.items.L.size()", equalTo(2))
+            .body("Item.items.L[0].S", equalTo("a"))
+            .body("Item.items.L[1].S", equalTo("b"));
+
+        // Cleanup
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.DeleteTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {"TableName": "ListAppendTable"}
+                """)
+        .when()
+            .post("/")
+        .then()
+            .statusCode(200);
     }
 
     @Test

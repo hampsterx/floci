@@ -17,6 +17,7 @@ Floci is a fast, free, and open-source local AWS service emulator built for deve
 | SSM Parameter Store | JSON 1.1 |
 | SQS | Query / JSON |
 | SNS | Query / JSON |
+| SES | Query / REST JSON |
 | S3 | REST XML |
 | DynamoDB + Streams | JSON 1.1 |
 | Lambda | REST JSON |
@@ -32,6 +33,7 @@ Floci is a fast, free, and open-source local AWS service emulator built for deve
 | ElastiCache (Redis) | Query + RESP proxy |
 | RDS (PostgreSQL / MySQL) | Query + wire proxy |
 | EventBridge | JSON 1.1 |
+| EventBridge Scheduler | REST JSON |
 | CloudWatch Logs & Metrics | JSON 1.1 / Query |
 
 ## Why Floci?
@@ -53,7 +55,14 @@ services:
     ports:
       - "4566:4566"
     volumes:
+      # Local directory bind mount (default)
       - ./data:/app/data
+      
+      # OR named volume (optional):
+      # - floci-data:/app/data
+
+#volumes:
+#  floci-data:
 ```
 
 ```bash

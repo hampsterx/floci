@@ -96,6 +96,8 @@ floci:
       default-mariadb-image: "mariadb:11"
     eventbridge:
       enabled: true
+    scheduler:
+      enabled: true
     cloudwatchlogs:
       enabled: true
       max-events-per-query: 10000
@@ -125,3 +127,8 @@ floci:
       default-image: "opensearchproject/opensearch:2"
       proxy-base-port: 9400
       proxy-max-port: 9499
+    ec2:
+      enabled: true
+    ecs:
+      enabled: true
+      mock: false

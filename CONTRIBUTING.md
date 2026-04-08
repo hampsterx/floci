@@ -7,7 +7,7 @@ Thank you for your interest in contributing! Floci is a community-driven project
 - **Bug reports** — open an issue with a minimal reproduction
 - **Feature requests** — open an issue describing the AWS behavior you need
 - **Pull requests** — bug fixes, new service implementations, or improvements
-- **Compatibility tests** — add cases to `../floci-compatibility-tests`
+- **Compatibility tests** — add cases to `./compatibility-tests/`
 
 ## Getting Started
 
@@ -67,6 +67,8 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/) �
 | `docs:` | Documentation only | none |
 | `chore:` | Build, CI, dependencies | none |
 | `BREAKING CHANGE:` | Footer or `!` suffix — incompatible change | major |
+
+Do not include `Co-Authored-By` trailers for AI tools in commit messages. Attribution should be limited to human contributors.
 
 **Examples:**
 

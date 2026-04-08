@@ -161,6 +161,23 @@ class S3IntegrationTest {
 
     @Test
     @Order(12)
+    void listObjectsWithDelimiterReturnsCommonPrefixes() {
+        given()
+            .queryParam("delimiter", "/")
+            .queryParam("list-type", "2")
+        .when()
+            .get("/test-bucket")
+        .then()
+            .statusCode(200)
+            .body(containsString("<CommonPrefixes>"))
+            .body(containsString("<Prefix>data/</Prefix>"))
+            .body(containsString("<Key>greeting.txt</Key>"))
+            .body(containsString("<KeyCount>2</KeyCount>"))
+            .body(containsString("<IsTruncated>false</IsTruncated>"));
+    }
+
+    @Test
+    @Order(13)
     void copyObject() {
         given()
             .header("x-amz-copy-source", "/test-bucket/greeting.txt")
@@ -186,7 +203,7 @@ class S3IntegrationTest {
     }
 
     @Test
-    @Order(13)
+    @Order(14)
     void deleteObject() {
         given()
         .when()
@@ -203,7 +220,7 @@ class S3IntegrationTest {
     }
 
     @Test
-    @Order(14)
+    @Order(15)
     void deleteNonEmptyBucketFails() {
         given()
         .when()
@@ -352,6 +369,30 @@ class S3IntegrationTest {
         given().delete("/" + bucket + "/" + srcKey);
         given().delete("/" + bucket + "/" + dstKey);
         given().delete("/" + bucket);
+    }
+
+    @Test
+    @Order(21)
+    void copyObjectWithMalformedEncodedSourceReturns400() {
+        given()
+            .header("x-amz-copy-source", "/test-bucket/%ZZinvalid")
+        .when()
+            .put("/test-bucket/dest-key")
+        .then()
+            .statusCode(400)
+            .body(containsString("InvalidArgument"));
+    }
+
+    @Test
+    @Order(22)
+    void copyObjectWithEmptyBucketReturns400() {
+        given()
+            .header("x-amz-copy-source", "/key-only-no-bucket")
+        .when()
+            .put("/test-bucket/dest-key")
+        .then()
+            .statusCode(400)
+            .body(containsString("InvalidArgument"));
     }
 
     @Test
@@ -855,5 +896,239 @@ class S3IntegrationTest {
         given().delete("/encoding-test-bucket/encoded-replace.txt");
         given().delete("/encoding-test-bucket/composite-encoded.txt");
         given().delete("/encoding-test-bucket");
+    }
+
+    // --- S3 Notification Configuration with Filter ---
+
+    @Test
+    @Order(90)
+    void createNotificationBucket() {
+        given()
+        .when()
+            .put("/notif-test-bucket")
+        .then()
+            .statusCode(200);
+    }
+
+    @Test
+    @Order(91)
+    void putNotificationConfigWithFilterIsNotDropped() {
+        String xml = """
+                <NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                  <QueueConfiguration>
+                    <Id>my-notif</Id>
+                    <Queue>arn:aws:sqs:us-east-1:000000000000:test-queue</Queue>
+                    <Event>s3:ObjectCreated:*</Event>
+                    <Filter>
+                      <S3Key>
+                        <FilterRule>
+                          <Name>prefix</Name>
+                          <Value>incoming/</Value>
+                        </FilterRule>
+                      </S3Key>
+                    </Filter>
+                  </QueueConfiguration>
+                </NotificationConfiguration>
+                """;
+
+        given()
+            .contentType("application/xml")
+            .queryParam("notification", "")
+            .body(xml)
+        .when()
+            .put("/notif-test-bucket")
+        .then()
+            .statusCode(200);
+
+        given()
+            .queryParam("notification", "")
+        .when()
+            .get("/notif-test-bucket")
+        .then()
+            .statusCode(200)
+            .body(containsString("QueueConfiguration"))
+            .body(containsString("arn:aws:sqs:us-east-1:000000000000:test-queue"))
+            .body(containsString("s3:ObjectCreated:*"))
+            // Verify filter rules are preserved in round-trip
+            .body(containsString("Filter"))
+            .body(containsString("FilterRule"))
+            .body(containsString("<Name>prefix</Name>"))
+            .body(containsString("<Value>incoming/</Value>"));
+    }
+
+    @Test
+    @Order(92)
+    void putNotificationConfigWithFilterBeforeQueueIsNotDropped() {
+        // Filter appears BEFORE Queue — ensures element order doesn't matter
+        String xml = """
+                <NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                  <QueueConfiguration>
+                    <Id>filter-first</Id>
+                    <Filter>
+                      <S3Key>
+                        <FilterRule>
+                          <Name>suffix</Name>
+                          <Value>.csv</Value>
+                        </FilterRule>
+                      </S3Key>
+                    </Filter>
+                    <Queue>arn:aws:sqs:us-east-1:000000000000:csv-queue</Queue>
+                    <Event>s3:ObjectCreated:Put</Event>
+                  </QueueConfiguration>
+                </NotificationConfiguration>
+                """;
+
+        given()
+            .contentType("application/xml")
+            .queryParam("notification", "")
+            .body(xml)
+        .when()
+            .put("/notif-test-bucket")
+        .then()
+            .statusCode(200);
+
+        given()
+            .queryParam("notification", "")
+        .when()
+            .get("/notif-test-bucket")
+        .then()
+            .statusCode(200)
+            .body(containsString("QueueConfiguration"))
+            .body(containsString("arn:aws:sqs:us-east-1:000000000000:csv-queue"))
+            .body(containsString("s3:ObjectCreated:Put"))
+            .body(containsString("<Name>suffix</Name>"))
+            .body(containsString("<Value>.csv</Value>"));
+    }
+
+    @Test
+    @Order(93)
+    void cleanupNotificationBucket() {
+        given().delete("/notif-test-bucket");
+    }
+
+    // --- PublicAccessBlock ---
+
+    @Test
+    @Order(100)
+    void putPublicAccessBlockReturns200() {
+        given().when().put("/test-bucket").then().statusCode(anyOf(equalTo(200), equalTo(409)));
+
+        String xml = "<PublicAccessBlockConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                + "<BlockPublicAcls>true</BlockPublicAcls>"
+                + "<IgnorePublicAcls>true</IgnorePublicAcls>"
+                + "<BlockPublicPolicy>true</BlockPublicPolicy>"
+                + "<RestrictPublicBuckets>true</RestrictPublicBuckets>"
+                + "</PublicAccessBlockConfiguration>";
+        given()
+            .body(xml)
+        .when()
+            .put("/test-bucket?publicAccessBlock")
+        .then()
+            .statusCode(200);
+    }
+
+    @Test
+    @Order(101)
+    void getPublicAccessBlockReturnsStoredConfig() {
+        given()
+        .when()
+            .get("/test-bucket?publicAccessBlock")
+        .then()
+            .statusCode(200)
+            .body(containsString("BlockPublicAcls"))
+            .body(containsString("true"));
+    }
+
+    @Test
+    @Order(102)
+    void deletePublicAccessBlockReturns204() {
+        given()
+        .when()
+            .delete("/test-bucket?publicAccessBlock")
+        .then()
+            .statusCode(204);
+    }
+
+    @Test
+    @Order(103)
+    void getPublicAccessBlockAfterDeleteReturns404() {
+        given()
+        .when()
+            .get("/test-bucket?publicAccessBlock")
+        .then()
+            .statusCode(404)
+            .body(containsString("NoSuchPublicAccessBlockConfiguration"));
+    }
+
+    // --- ListObjectsV2 pagination ---
+
+    @Test
+    @Order(110)
+    void listObjectsV2StartAfterFiltersResults() {
+        // bucket and objects from earlier test orders exist; add fresh ones in a dedicated bucket
+        given().when().put("/pag-test-bucket").then().statusCode(200);
+        given().body("a").when().put("/pag-test-bucket/a.txt").then().statusCode(200);
+        given().body("b").when().put("/pag-test-bucket/b.txt").then().statusCode(200);
+        given().body("c").when().put("/pag-test-bucket/c.txt").then().statusCode(200);
+
+        given()
+        .when()
+            .get("/pag-test-bucket?list-type=2&start-after=a.txt")
+        .then()
+            .statusCode(200)
+            .body(containsString("<StartAfter>a.txt</StartAfter>"))
+            .body(not(containsString("<Key>a.txt</Key>")))
+            .body(containsString("<Key>b.txt</Key>"))
+            .body(containsString("<Key>c.txt</Key>"));
+    }
+
+    @Test
+    @Order(111)
+    void listObjectsV2ContinuationTokenPaginates() {
+        // First page: max-keys=2
+        String page1Body =
+            given()
+            .when()
+                .get("/pag-test-bucket?list-type=2&max-keys=2")
+            .then()
+                .statusCode(200)
+                .body(containsString("<IsTruncated>true</IsTruncated>"))
+                .body(containsString("<NextContinuationToken>"))
+                .extract().body().asString();
+
+        // Extract NextContinuationToken
+        int start = page1Body.indexOf("<NextContinuationToken>") + "<NextContinuationToken>".length();
+        int end = page1Body.indexOf("</NextContinuationToken>");
+        String token = page1Body.substring(start, end);
+
+        // Second page using the token
+        given()
+        .when()
+            .get("/pag-test-bucket?list-type=2&max-keys=2&continuation-token=" + token)
+        .then()
+            .statusCode(200)
+            .body(containsString("<IsTruncated>false</IsTruncated>"))
+            .body(containsString("<ContinuationToken>" + token + "</ContinuationToken>"))
+            .body(containsString("<Key>c.txt</Key>"));
+    }
+
+    @Test
+    @Order(112)
+    void listObjectsV2EncodingTypeIsEchoed() {
+        given()
+        .when()
+            .get("/pag-test-bucket?list-type=2&encoding-type=url")
+        .then()
+            .statusCode(200)
+            .body(containsString("<EncodingType>url</EncodingType>"));
+    }
+
+    @Test
+    @Order(113)
+    void cleanupPaginationBucket() {
+        given().when().delete("/pag-test-bucket/a.txt");
+        given().when().delete("/pag-test-bucket/b.txt");
+        given().when().delete("/pag-test-bucket/c.txt");
+        given().when().delete("/pag-test-bucket");
     }
 }

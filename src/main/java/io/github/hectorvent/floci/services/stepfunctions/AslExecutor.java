@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
@@ -25,6 +26,9 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -46,6 +50,7 @@ public class AslExecutor {
     private final DynamoDbJsonHandler dynamoDbJsonHandler;
     private final ObjectMapper objectMapper;
     private final JsonataEvaluator jsonataEvaluator;
+    private final Instance<StepFunctionsService> sfnService;
     private final ExecutorService executor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "sfn-executor");
         t.setDaemon(true);
@@ -55,13 +60,15 @@ public class AslExecutor {
     @Inject
     public AslExecutor(LambdaExecutorService lambdaExecutor, LambdaFunctionStore functionStore,
                        DynamoDbService dynamoDbService, DynamoDbJsonHandler dynamoDbJsonHandler,
-                       ObjectMapper objectMapper, JsonataEvaluator jsonataEvaluator) {
+                       ObjectMapper objectMapper, JsonataEvaluator jsonataEvaluator,
+                       Instance<StepFunctionsService> sfnService) {
         this.lambdaExecutor = lambdaExecutor;
         this.functionStore = functionStore;
         this.dynamoDbService = dynamoDbService;
         this.dynamoDbJsonHandler = dynamoDbJsonHandler;
         this.objectMapper = objectMapper;
         this.jsonataEvaluator = jsonataEvaluator;
+        this.sfnService = sfnService;
     }
 
     /**
@@ -69,82 +76,102 @@ public class AslExecutor {
      */
     public void executeAsync(StateMachine sm, Execution exec, List<HistoryEvent> history,
                              BiConsumer<Execution, List<HistoryEvent>> onUpdate) {
-        executor.submit(() -> {
-            try {
-                AtomicLong eventId = new AtomicLong(history.size());
-                JsonNode definition = objectMapper.readTree(sm.getDefinition());
-                JsonNode states = definition.path("States");
-                String startAt = definition.path("StartAt").asText();
-                String topLevelQueryLanguage = definition.path("QueryLanguage").asText("JSONPath");
-                JsonNode currentInput = parseInput(exec.getInput());
-                JsonNode execContext = buildContext(exec, sm);
+        executor.submit(() -> doExecute(sm, exec, history, onUpdate));
+    }
 
-                String currentStateName = startAt;
-                while (currentStateName != null) {
-                    JsonNode stateDef = states.path(currentStateName);
-                    if (stateDef.isMissingNode()) {
-                        throw new RuntimeException("State not found: " + currentStateName);
-                    }
+    /**
+     * Runs execution synchronously on the calling thread. Blocks until the execution completes.
+     */
+    public void executeSync(StateMachine sm, Execution exec, List<HistoryEvent> history,
+                            BiConsumer<Execution, List<HistoryEvent>> onUpdate) {
+        try {
+            Future<?> f = executor.submit(() -> doExecute(sm, exec, history, onUpdate));
+            f.get(300, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            exec.setStatus("TIMED_OUT");
+            exec.setStopDate(System.currentTimeMillis() / 1000.0);
+            onUpdate.accept(exec, history);
+        } catch (Exception e) {
+            LOG.warnv("Sync execution wait failed for {0}: {1}", exec.getExecutionArn(), e.getMessage());
+        }
+    }
 
-                    String type = stateDef.path("Type").asText();
-                    addEvent(history, eventId, stateEnteredEventType(type), null,
-                            Map.of("name", currentStateName, "input", currentInput.toString()));
+    private void doExecute(StateMachine sm, Execution exec, List<HistoryEvent> history,
+                           BiConsumer<Execution, List<HistoryEvent>> onUpdate) {
+        try {
+            AtomicLong eventId = new AtomicLong(history.size());
+            JsonNode definition = objectMapper.readTree(sm.getDefinition());
+            JsonNode states = definition.path("States");
+            String startAt = definition.path("StartAt").asText();
+            String topLevelQueryLanguage = definition.path("QueryLanguage").asText("JSONPath");
+            JsonNode currentInput = parseInput(exec.getInput());
+            JsonNode execContext = buildContext(exec, sm);
 
-                    // Update per-state context fields
-                    updateStateContext(execContext, currentStateName);
-
-                    try {
-                        boolean jsonata = isJsonata(stateDef, topLevelQueryLanguage);
-                        StateResult stateResult = executeState(currentStateName, type, stateDef, currentInput,
-                                history, eventId, sm, jsonata, topLevelQueryLanguage, execContext);
-                        addEvent(history, eventId, stateExitedEventType(type), eventId.get() - 1,
-                                Map.of("name", currentStateName, "output", stateResult.output().toString()));
-
-                        currentInput = stateResult.output();
-                        currentStateName = stateResult.nextState();
-
-                        if ("Succeed".equals(type) || stateDef.path("End").asBoolean(false)) {
-                            currentStateName = null;
-                        }
-                    } catch (FailStateException e) {
-                        exec.setStatus("FAILED");
-                        exec.setStopDate(System.currentTimeMillis() / 1000.0);
-                        String failError = e.error != null ? e.error : "States.Runtime";
-                        String failCause = e.cause != null ? e.cause : "";
-                        exec.setError(failError);
-                        exec.setCause(failCause);
-                        addEvent(history, eventId, "ExecutionFailed", null,
-                                Map.of("error", failError, "cause", failCause));
-                        onUpdate.accept(exec, history);
-                        return;
-                    } catch (Exception e) {
-                        exec.setStatus("FAILED");
-                        exec.setStopDate(System.currentTimeMillis() / 1000.0);
-                        String runtimeError = "States.Runtime";
-                        String runtimeCause = e.getMessage() != null ? e.getMessage() : "Unknown error";
-                        exec.setError(runtimeError);
-                        exec.setCause(runtimeCause);
-                        addEvent(history, eventId, "ExecutionFailed", null,
-                                Map.of("error", runtimeError, "cause", runtimeCause));
-                        onUpdate.accept(exec, history);
-                        return;
-                    }
+            String currentStateName = startAt;
+            while (currentStateName != null) {
+                JsonNode stateDef = states.path(currentStateName);
+                if (stateDef.isMissingNode()) {
+                    throw new RuntimeException("State not found: " + currentStateName);
                 }
 
-                exec.setStatus("SUCCEEDED");
-                exec.setOutput(currentInput.toString());
-                exec.setStopDate(System.currentTimeMillis() / 1000.0);
-                addEvent(history, eventId, "ExecutionSucceeded", null,
-                        Map.of("output", currentInput.toString()));
-                onUpdate.accept(exec, history);
+                String type = stateDef.path("Type").asText();
+                addEvent(history, eventId, stateEnteredEventType(type), null,
+                        Map.of("name", currentStateName, "input", currentInput.toString()));
 
-            } catch (Exception e) {
-                LOG.warnv("ASL execution failed for {0}: {1}", exec.getExecutionArn(), e.getMessage());
-                exec.setStatus("FAILED");
-                exec.setStopDate(System.currentTimeMillis() / 1000.0);
-                onUpdate.accept(exec, history);
+                // Update per-state context fields
+                updateStateContext(execContext, currentStateName);
+
+                try {
+                    boolean jsonata = isJsonata(stateDef, topLevelQueryLanguage);
+                    StateResult stateResult = executeState(currentStateName, type, stateDef, currentInput,
+                            history, eventId, sm, jsonata, topLevelQueryLanguage, execContext);
+                    addEvent(history, eventId, stateExitedEventType(type), eventId.get() - 1,
+                            Map.of("name", currentStateName, "output", stateResult.output().toString()));
+
+                    currentInput = stateResult.output();
+                    currentStateName = stateResult.nextState();
+
+                    if ("Succeed".equals(type) || stateDef.path("End").asBoolean(false)) {
+                        currentStateName = null;
+                    }
+                } catch (FailStateException e) {
+                    exec.setStatus("FAILED");
+                    exec.setStopDate(System.currentTimeMillis() / 1000.0);
+                    String failError = e.error != null ? e.error : "States.Runtime";
+                    String failCause = e.cause != null ? e.cause : "";
+                    exec.setError(failError);
+                    exec.setCause(failCause);
+                    addEvent(history, eventId, "ExecutionFailed", null,
+                            Map.of("error", failError, "cause", failCause));
+                    onUpdate.accept(exec, history);
+                    return;
+                } catch (Exception e) {
+                    exec.setStatus("FAILED");
+                    exec.setStopDate(System.currentTimeMillis() / 1000.0);
+                    String runtimeError = "States.Runtime";
+                    String runtimeCause = e.getMessage() != null ? e.getMessage() : "Unknown error";
+                    exec.setError(runtimeError);
+                    exec.setCause(runtimeCause);
+                    addEvent(history, eventId, "ExecutionFailed", null,
+                            Map.of("error", runtimeError, "cause", runtimeCause));
+                    onUpdate.accept(exec, history);
+                    return;
+                }
             }
-        });
+
+            exec.setStatus("SUCCEEDED");
+            exec.setOutput(currentInput.toString());
+            exec.setStopDate(System.currentTimeMillis() / 1000.0);
+            addEvent(history, eventId, "ExecutionSucceeded", null,
+                    Map.of("output", currentInput.toString()));
+            onUpdate.accept(exec, history);
+
+        } catch (Exception e) {
+            LOG.warnv("ASL execution failed for {0}: {1}", exec.getExecutionArn(), e.getMessage());
+            exec.setStatus("FAILED");
+            exec.setStopDate(System.currentTimeMillis() / 1000.0);
+            onUpdate.accept(exec, history);
+        }
     }
 
     private StateResult executeState(String name, String type, JsonNode stateDef, JsonNode input,
@@ -187,36 +214,74 @@ public class AslExecutor {
     private StateResult executeTaskState(String stateName, JsonNode stateDef, JsonNode input,
                                          List<HistoryEvent> history, AtomicLong eventId, StateMachine sm,
                                          boolean jsonata, JsonNode context) throws Exception {
+        String resource = stateDef.path("Resource").asText();
+        boolean isWaitForToken = resource.endsWith(".waitForTaskToken");
+        String effectiveResource = isWaitForToken
+                ? resource.substring(0, resource.length() - ".waitForTaskToken".length())
+                : resource;
+        boolean isActivity = isActivityArn(effectiveResource);
+        boolean needsToken = isWaitForToken || isActivity;
+
+        String taskToken = null;
+        CompletableFuture<JsonNode> tokenFuture = null;
+        if (needsToken) {
+            taskToken = UUID.randomUUID().toString();
+            ((ObjectNode) context.get("Task")).put("Token", taskToken);
+            tokenFuture = sfnService.get().registerPendingToken(taskToken);
+        }
+
+        JsonNode taskResult;
         if (jsonata) {
             JsonNode effectiveInput = input;
             if (stateDef.has("Arguments")) {
                 JsonNode statesVar = buildStatesVar(input, null, context);
                 effectiveInput = jsonataEvaluator.resolveTemplate(stateDef.get("Arguments"), statesVar);
             }
+            taskResult = invokeResource(effectiveResource, effectiveInput, sm, taskToken);
+        } else {
+            JsonNode effectiveInput = applyInputPath(stateDef, input);
+            if (stateDef.has("Parameters")) {
+                effectiveInput = resolveParameters(stateDef.get("Parameters"), effectiveInput, context);
+            }
+            taskResult = invokeResource(effectiveResource, effectiveInput, sm, taskToken);
+        }
 
-            String resource = stateDef.path("Resource").asText();
-            JsonNode taskResult = invokeResource(resource, effectiveInput, stateDef, sm);
+        if (tokenFuture != null) {
+            taskResult = awaitToken(tokenFuture, stateDef);
+        }
+
+        if (jsonata) {
             JsonNode output = applyJsonataOutput(stateDef, input, taskResult, context);
-
+            return new StateResult(output, stateDef.path("Next").asText(null));
+        } else {
+            JsonNode output = mergeResult(stateDef, input, taskResult);
+            output = applyOutputPath(stateDef, input, output);
             return new StateResult(output, stateDef.path("Next").asText(null));
         }
-
-        JsonNode effectiveInput = applyInputPath(stateDef, input);
-        if (stateDef.has("Parameters")) {
-            effectiveInput = resolveParameters(stateDef.get("Parameters"), effectiveInput);
-        }
-
-        String resource = stateDef.path("Resource").asText();
-        JsonNode taskResult = invokeResource(resource, effectiveInput, stateDef, sm);
-
-        JsonNode output = mergeResult(stateDef, input, taskResult);
-        output = applyOutputPath(stateDef, input, output);
-
-        String next = stateDef.path("Next").asText(null);
-        return new StateResult(output, next);
     }
 
-    private JsonNode invokeResource(String resource, JsonNode input, JsonNode stateDef, StateMachine sm) throws Exception {
+    private JsonNode awaitToken(CompletableFuture<JsonNode> future, JsonNode stateDef) throws Exception {
+        int timeout = stateDef.path("HeartbeatSeconds").asInt(0);
+        if (timeout <= 0) {
+            timeout = 300;
+        }
+        try {
+            return future.get(timeout, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            future.cancel(true);
+            throw new FailStateException("States.HeartbeatTimeout",
+                    "Task timed out after " + timeout + " seconds");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof FailStateException fse) {
+                throw fse;
+            }
+            throw new FailStateException("States.TaskFailed",
+                    cause != null ? cause.getMessage() : "Task failed");
+        }
+    }
+
+    private JsonNode invokeResource(String resource, JsonNode input, StateMachine sm, String taskToken) throws Exception {
         // Support Lambda resources: direct ARN or optimized integration
         String functionName = null;
         JsonNode lambdaPayload = input;
@@ -224,22 +289,15 @@ public class AslExecutor {
         if (resource.contains(":lambda:") && resource.contains(":function:")) {
             // Direct Lambda ARN: arn:aws:lambda:region:account:function:name
             functionName = resource.substring(resource.lastIndexOf(':') + 1);
-        } else if (resource.equals("arn:aws:states:::lambda:invoke") ||
-                   resource.equals("arn:aws:states:::lambda:invoke.waitForTaskToken")) {
-            // Optimized Lambda integration — function name comes from Parameters
-            if (stateDef.has("Parameters")) {
-                JsonNode params = stateDef.get("Parameters");
-                String fnRef = params.path("FunctionName").asText(null);
-                if (fnRef == null) fnRef = params.path("FunctionName.$").asText(null);
-                if (fnRef != null) {
-                    functionName = fnRef.contains(":") ? fnRef.substring(fnRef.lastIndexOf(':') + 1) : fnRef;
-                }
-                // Payload comes from Payload or Payload.$
-                if (params.has("Payload.$")) {
-                    lambdaPayload = resolvePath(params.path("Payload.$").asText(), input);
-                } else if (params.has("Payload")) {
-                    lambdaPayload = params.get("Payload");
-                }
+        } else if (resource.equals("arn:aws:states:::lambda:invoke")) {
+            // Optimized Lambda integration — function name and payload come from resolved input
+            String fnRef = input.path("FunctionName").asText(null);
+            if (fnRef != null) {
+                functionName = fnRef.contains(":") ? fnRef.substring(fnRef.lastIndexOf(':') + 1) : fnRef;
+            }
+            JsonNode payload = input.path("Payload");
+            if (!payload.isMissingNode()) {
+                lambdaPayload = payload;
             }
         }
 
@@ -283,8 +341,100 @@ public class AslExecutor {
             return invokeAwsSdkDynamoDb(camelCaseAction, input, region);
         }
 
+        // Nested state machine integration
+        if (resource.startsWith("arn:aws:states:::states:startExecution")) {
+            String mode = resource.substring("arn:aws:states:::states:startExecution".length());
+            String region = extractRegionFromArn(sm.getStateMachineArn());
+            return invokeNestedStateMachine(mode, input, region);
+        }
+
+        // Activity resource: arn:aws:states:{region}:{account}:activity:{name}
+        if (isActivityArn(resource)) {
+            if (taskToken == null) {
+                throw new FailStateException("States.TaskFailed",
+                        "Activity resource requires waitForTaskToken: " + resource);
+            }
+            String inputStr = objectMapper.writeValueAsString(input);
+            sfnService.get().enqueueActivityTask(resource, taskToken, inputStr);
+            return NullNode.getInstance(); // caller blocks via token future
+        }
+
         throw new FailStateException("States.TaskFailed",
                 "Unsupported resource: " + resource);
+    }
+
+    private JsonNode invokeNestedStateMachine(String mode, JsonNode input, String region) throws Exception {
+        String smArn = input.path("StateMachineArn").asText(null);
+        if (smArn == null || smArn.isBlank()) {
+            throw new FailStateException("States.TaskFailed",
+                    "StateMachineArn is required for nested state machine execution");
+        }
+        JsonNode inputNode = input.path("Input");
+        String childInput = inputNode.isMissingNode() ? "{}" : objectMapper.writeValueAsString(inputNode);
+
+        io.github.hectorvent.floci.services.stepfunctions.model.Execution exec =
+                sfnService.get().startExecution(smArn, null, childInput, region);
+        String execArn = exec.getExecutionArn();
+
+        if ("".equals(mode)) {
+            // Fire-and-forget: return { executionArn, startDate }
+            ObjectNode result = objectMapper.createObjectNode();
+            result.put("executionArn", execArn);
+            result.put("startDate", exec.getStartDate());
+            return result;
+        }
+
+        // .sync or .sync:2 — poll until terminal
+        for (int i = 0; i < 600; i++) {
+            Thread.sleep(100);
+            io.github.hectorvent.floci.services.stepfunctions.model.Execution current =
+                    sfnService.get().describeExecution(execArn);
+            String status = current.getStatus();
+            if ("RUNNING".equals(status)) {
+                continue;
+            }
+            if ("SUCCEEDED".equals(status)) {
+                if (".sync:2".equals(mode)) {
+                    String out = current.getOutput();
+                    return objectMapper.readTree(out != null ? out : "null");
+                }
+                // .sync — full execution envelope; output field is a JSON string
+                ObjectNode envelope = objectMapper.createObjectNode();
+                envelope.put("executionArn", current.getExecutionArn());
+                envelope.put("stateMachineArn", current.getStateMachineArn());
+                envelope.put("name", current.getName());
+                envelope.put("status", current.getStatus());
+                envelope.put("startDate", current.getStartDate());
+                if (current.getStopDate() != null) {
+                    envelope.put("stopDate", current.getStopDate());
+                }
+                if (current.getInput() != null) {
+                    envelope.put("input", current.getInput());
+                }
+                if (current.getOutput() != null) {
+                    envelope.put("output", current.getOutput());
+                }
+                return envelope;
+            }
+            throw new FailStateException(
+                    current.getError() != null ? current.getError() : "States.TaskFailed",
+                    current.getCause() != null ? current.getCause()
+                            : "Nested execution ended with status: " + status);
+        }
+        throw new FailStateException("States.TaskFailed",
+                "Nested execution timed out: " + execArn);
+    }
+
+    private boolean isActivityArn(String resource) {
+        // arn:aws:states:{region}:{account}:activity:{name}
+        // Distinguish from integration ARNs like arn:aws:states:::lambda:invoke (empty region/account)
+        String[] parts = resource.split(":");
+        return parts.length >= 7
+                && "arn".equals(parts[0])
+                && "states".equals(parts[2])
+                && "activity".equals(parts[5])
+                && !parts[3].isEmpty()
+                && !parts[4].isEmpty();
     }
 
     private JsonNode invokeDynamoDb(String operation, JsonNode input, String region) {
@@ -292,7 +442,13 @@ public class AslExecutor {
         switch (operation) {
             case "putItem" -> {
                 JsonNode item = input.path("Item");
-                dynamoDbService.putItem(tableName, item, region);
+                String conditionExpr = input.has("ConditionExpression")
+                        ? input.get("ConditionExpression").asText() : null;
+                JsonNode exprAttrNames = input.has("ExpressionAttributeNames")
+                        ? input.get("ExpressionAttributeNames") : null;
+                JsonNode exprAttrValues = input.has("ExpressionAttributeValues")
+                        ? input.get("ExpressionAttributeValues") : null;
+                dynamoDbService.putItem(tableName, item, conditionExpr, exprAttrNames, exprAttrValues, region);
                 return objectMapper.createObjectNode();
             }
             case "getItem" -> {
@@ -306,8 +462,33 @@ public class AslExecutor {
             }
             case "deleteItem" -> {
                 JsonNode key = input.path("Key");
-                dynamoDbService.deleteItem(tableName, key, region);
+                String conditionExpr = input.has("ConditionExpression")
+                        ? input.get("ConditionExpression").asText() : null;
+                JsonNode exprAttrNames = input.has("ExpressionAttributeNames")
+                        ? input.get("ExpressionAttributeNames") : null;
+                JsonNode exprAttrValues = input.has("ExpressionAttributeValues")
+                        ? input.get("ExpressionAttributeValues") : null;
+                dynamoDbService.deleteItem(tableName, key, conditionExpr, exprAttrNames, exprAttrValues, region);
                 return objectMapper.createObjectNode();
+            }
+            case "scan" -> {
+                String filterExpression = input.has("FilterExpression")
+                        ? input.get("FilterExpression").asText() : null;
+                JsonNode exprAttrNames = input.has("ExpressionAttributeNames")
+                        ? input.get("ExpressionAttributeNames") : null;
+                JsonNode exprAttrValues = input.has("ExpressionAttributeValues")
+                        ? input.get("ExpressionAttributeValues") : null;
+                Integer limit = input.has("Limit") ? input.get("Limit").asInt() : null;
+                JsonNode scanFilter = input.has("ScanFilter") ? input.get("ScanFilter") : null;
+                DynamoDbService.ScanResult scanResult = dynamoDbService.scan(
+                        tableName, filterExpression, exprAttrNames, exprAttrValues, scanFilter, limit, null, region);
+                ObjectNode response = objectMapper.createObjectNode();
+                com.fasterxml.jackson.databind.node.ArrayNode items = objectMapper.createArrayNode();
+                scanResult.items().forEach(items::add);
+                response.set("Items", items);
+                response.put("Count", scanResult.items().size());
+                response.put("ScannedCount", scanResult.scannedCount());
+                return response;
             }
             case "updateItem" -> {
                 JsonNode key = input.path("Key");
@@ -678,6 +859,10 @@ public class AslExecutor {
         stateMachine.put("Id", sm.getStateMachineArn());
         stateMachine.put("Name", sm.getName());
         context.set("StateMachine", stateMachine);
+        // Task node — Token is populated by executeTaskState when waitForTaskToken is active
+        ObjectNode task = objectMapper.createObjectNode();
+        task.putNull("Token");
+        context.set("Task", task);
         return context;
     }
 
@@ -746,7 +931,7 @@ public class AslExecutor {
         return resolvePath(path, output);
     }
 
-    private JsonNode resolveParameters(JsonNode parameters, JsonNode input) throws Exception {
+    private JsonNode resolveParameters(JsonNode parameters, JsonNode input, JsonNode context) throws Exception {
         if (parameters.isObject()) {
             ObjectNode resolved = objectMapper.createObjectNode();
             Iterator<Map.Entry<String, JsonNode>> fields = parameters.fields();
@@ -756,7 +941,17 @@ public class AslExecutor {
                 JsonNode val = entry.getValue();
                 if (key.endsWith(".$")) {
                     String realKey = key.substring(0, key.length() - 2);
-                    resolved.set(realKey, resolvePath(val.asText(), input));
+                    String path = val.asText();
+                    if (path.startsWith("$$.")) {
+                        // Context reference: $$. → resolve against context as $.
+                        resolved.set(realKey, resolvePath("$." + path.substring(3), context));
+                    } else if ("$$".equals(path)) {
+                        resolved.set(realKey, context);
+                    } else {
+                        resolved.set(realKey, resolvePath(path, input));
+                    }
+                } else if (val.isObject()) {
+                    resolved.set(key, resolveParameters(val, input, context));
                 } else {
                     resolved.set(key, val);
                 }
@@ -769,6 +964,9 @@ public class AslExecutor {
     JsonNode resolvePath(String path, JsonNode root) {
         if (path == null || "$".equals(path)) {
             return root;
+        }
+        if (path.startsWith("States.")) {
+            return evaluateIntrinsic(path, root);
         }
         if (!path.startsWith("$.")) {
             return NullNode.getInstance();
@@ -791,6 +989,156 @@ public class AslExecutor {
             }
         }
         return current.isMissingNode() ? NullNode.getInstance() : current;
+    }
+
+    /**
+     * Evaluate a JSONPath-mode intrinsic function (States.*).
+     * Supports: States.StringToJson, States.JsonToString, States.Format,
+     *           States.Array, States.ArrayLength, States.MathAdd, States.UUID.
+     * Throws FailStateException("States.Runtime") for unrecognized functions.
+     */
+    private JsonNode evaluateIntrinsic(String expr, JsonNode root) {
+        int parenOpen = expr.indexOf('(');
+        int parenClose = expr.lastIndexOf(')');
+        if (parenOpen < 0 || parenClose < 0) {
+            throw new FailStateException("States.Runtime", "Malformed intrinsic function: " + expr);
+        }
+        String fnName = expr.substring(0, parenOpen).trim();
+        String argsStr = expr.substring(parenOpen + 1, parenClose).trim();
+
+        return switch (fnName) {
+            case "States.StringToJson" -> {
+                JsonNode arg = resolveIntrinsicArg(argsStr, root);
+                try {
+                    yield objectMapper.readTree(arg.asText());
+                } catch (Exception e) {
+                    throw new FailStateException("States.Runtime",
+                            "States.StringToJson could not parse: " + arg.asText());
+                }
+            }
+            case "States.JsonToString" -> {
+                JsonNode arg = resolveIntrinsicArg(argsStr, root);
+                try {
+                    yield objectMapper.getNodeFactory().textNode(objectMapper.writeValueAsString(arg));
+                } catch (Exception e) {
+                    throw new FailStateException("States.Runtime", "States.JsonToString failed: " + e.getMessage());
+                }
+            }
+            case "States.Format" -> {
+                List<String> parts = splitIntrinsicArgs(argsStr);
+                if (parts.isEmpty()) {
+                    throw new FailStateException("States.Runtime", "States.Format requires at least one argument");
+                }
+                String template = unquoteString(parts.get(0));
+                StringBuilder sb = new StringBuilder();
+                int argIdx = 1;
+                for (int i = 0; i < template.length(); i++) {
+                    if (i + 1 < template.length() && template.charAt(i) == '{' && template.charAt(i + 1) == '}') {
+                        if (argIdx >= parts.size()) {
+                            throw new FailStateException("States.Runtime", "States.Format: not enough arguments");
+                        }
+                        JsonNode argVal = resolveIntrinsicArg(parts.get(argIdx++).trim(), root);
+                        sb.append(argVal.isTextual() ? argVal.asText() : argVal.toString());
+                        i++; // skip '}'
+                    } else {
+                        sb.append(template.charAt(i));
+                    }
+                }
+                yield objectMapper.getNodeFactory().textNode(sb.toString());
+            }
+            case "States.Array" -> {
+                List<String> parts = splitIntrinsicArgs(argsStr);
+                ArrayNode arr = objectMapper.createArrayNode();
+                for (String part : parts) {
+                    arr.add(resolveIntrinsicArg(part.trim(), root));
+                }
+                yield arr;
+            }
+            case "States.ArrayLength" -> {
+                JsonNode arg = resolveIntrinsicArg(argsStr, root);
+                if (!arg.isArray()) {
+                    throw new FailStateException("States.Runtime", "States.ArrayLength requires an array");
+                }
+                yield objectMapper.getNodeFactory().numberNode(arg.size());
+            }
+            case "States.MathAdd" -> {
+                List<String> parts = splitIntrinsicArgs(argsStr);
+                if (parts.size() != 2) {
+                    throw new FailStateException("States.Runtime", "States.MathAdd requires exactly 2 arguments");
+                }
+                JsonNode a = resolveIntrinsicArg(parts.get(0).trim(), root);
+                JsonNode b = resolveIntrinsicArg(parts.get(1).trim(), root);
+                yield objectMapper.getNodeFactory().numberNode(a.asLong() + b.asLong());
+            }
+            case "States.UUID" -> {
+                yield objectMapper.getNodeFactory().textNode(java.util.UUID.randomUUID().toString());
+            }
+            default -> throw new FailStateException("States.Runtime",
+                    "Unsupported intrinsic function: " + fnName);
+        };
+    }
+
+    /**
+     * Resolve a single intrinsic argument: either a $.path reference, a quoted string literal,
+     * or a numeric literal.
+     */
+    private JsonNode resolveIntrinsicArg(String arg, JsonNode root) {
+        arg = arg.trim();
+        if (arg.startsWith("$.") || "$".equals(arg)) {
+            return resolvePath(arg, root);
+        }
+        if (arg.startsWith("'") && arg.endsWith("'")) {
+            return objectMapper.getNodeFactory().textNode(arg.substring(1, arg.length() - 1));
+        }
+        if (arg.startsWith("\"") && arg.endsWith("\"")) {
+            return objectMapper.getNodeFactory().textNode(arg.substring(1, arg.length() - 1));
+        }
+        try {
+            return objectMapper.getNodeFactory().numberNode(Long.parseLong(arg));
+        } catch (NumberFormatException e1) {
+            try {
+                return objectMapper.getNodeFactory().numberNode(Double.parseDouble(arg));
+            } catch (NumberFormatException e2) {
+                // fall through: treat as bare path
+                return resolvePath(arg, root);
+            }
+        }
+    }
+
+    /**
+     * Split a comma-separated intrinsic args string, respecting nested parentheses and quoted strings.
+     */
+    private List<String> splitIntrinsicArgs(String argsStr) {
+        List<String> result = new ArrayList<>();
+        int depth = 0;
+        boolean inSingleQuote = false;
+        boolean inDoubleQuote = false;
+        int start = 0;
+        for (int i = 0; i < argsStr.length(); i++) {
+            char c = argsStr.charAt(i);
+            if (c == '\'' && !inDoubleQuote) inSingleQuote = !inSingleQuote;
+            else if (c == '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote;
+            else if (!inSingleQuote && !inDoubleQuote) {
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == ',' && depth == 0) {
+                    result.add(argsStr.substring(start, i).trim());
+                    start = i + 1;
+                }
+            }
+        }
+        if (start < argsStr.length()) {
+            result.add(argsStr.substring(start).trim());
+        }
+        return result;
+    }
+
+    private String unquoteString(String s) {
+        s = s.trim();
+        if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\""))) {
+            return s.substring(1, s.length() - 1);
+        }
+        return s;
     }
 
     private void setPath(ObjectNode root, String path, JsonNode value) {

@@ -1,6 +1,9 @@
 package io.github.hectorvent.floci.core.common;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.hectorvent.floci.services.acm.AcmJsonHandler;
+import io.github.hectorvent.floci.services.ecs.EcsJsonHandler;
 import io.github.hectorvent.floci.services.apigatewayv2.ApiGatewayV2JsonHandler;
 import io.github.hectorvent.floci.services.cloudwatch.logs.CloudWatchLogsHandler;
 import io.github.hectorvent.floci.services.cognito.CognitoJsonHandler;
@@ -9,13 +12,10 @@ import io.github.hectorvent.floci.services.kinesis.KinesisJsonHandler;
 import io.github.hectorvent.floci.services.kms.KmsJsonHandler;
 import io.github.hectorvent.floci.services.secretsmanager.SecretsManagerJsonHandler;
 import io.github.hectorvent.floci.services.ssm.SsmJsonHandler;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
-import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
@@ -42,6 +42,7 @@ public class AwsJson11Controller {
     private static final String KMS_TARGET_PREFIX = "TrentService.";
     private static final String COGNITO_TARGET_PREFIX = "AWSCognitoIdentityProviderService.";
     private static final String ACM_TARGET_PREFIX = "CertificateManager.";
+    private static final String ECS_TARGET_PREFIX = "AmazonEC2ContainerServiceV20141113.";
 
     private final ObjectMapper objectMapper;
     private final RegionResolver regionResolver;
@@ -54,6 +55,7 @@ public class AwsJson11Controller {
     private final KmsJsonHandler kmsJsonHandler;
     private final CognitoJsonHandler cognitoJsonHandler;
     private final AcmJsonHandler acmJsonHandler;
+    private final EcsJsonHandler ecsJsonHandler;
 
     @Inject
     public AwsJson11Controller(ObjectMapper objectMapper, RegionResolver regionResolver,
@@ -63,7 +65,7 @@ public class AwsJson11Controller {
                                KinesisJsonHandler kinesisJsonHandler,
                                ApiGatewayV2JsonHandler apigwV2JsonHandler,
                                KmsJsonHandler kmsJsonHandler, CognitoJsonHandler cognitoJsonHandler,
-                               AcmJsonHandler acmJsonHandler) {
+                               AcmJsonHandler acmJsonHandler, EcsJsonHandler ecsJsonHandler) {
         this.objectMapper = objectMapper;
         this.regionResolver = regionResolver;
         this.ssmJsonHandler = ssmJsonHandler;
@@ -75,11 +77,12 @@ public class AwsJson11Controller {
         this.kmsJsonHandler = kmsJsonHandler;
         this.cognitoJsonHandler = cognitoJsonHandler;
         this.acmJsonHandler = acmJsonHandler;
+        this.ecsJsonHandler = ecsJsonHandler;
     }
 
     @POST
     @Consumes("application/x-amz-json-1.1")
-    @Produces(MediaType.APPLICATION_JSON)
+    @Produces("application/x-amz-json-1.1")
     public Response handle(
             @HeaderParam("X-Amz-Target") String target,
             @Context HttpHeaders httpHeaders,
@@ -119,11 +122,11 @@ public class AwsJson11Controller {
         } else if (target.startsWith(ACM_TARGET_PREFIX)) {
             prefix = ACM_TARGET_PREFIX;
             serviceName = "ACM";
+        } else if (target.startsWith(ECS_TARGET_PREFIX)) {
+            prefix = ECS_TARGET_PREFIX;
+            serviceName = "ECS";
         } else {
-            return Response.status(400)
-                    .entity(new AwsErrorResponse("UnknownOperationException",
-                            "Unknown operation: " + target))
-                    .build();
+            return JsonErrorResponseUtils.createUnknownOperationErrorResponse(target);
         }
 
         String action = target.substring(prefix.length());
@@ -143,19 +146,15 @@ public class AwsJson11Controller {
                 case "KMS" -> kmsJsonHandler.handle(action, request, region);
                 case "Cognito" -> cognitoJsonHandler.handle(action, request, region);
                 case "ACM" -> acmJsonHandler.handle(action, request, region);
+                case "ECS" -> ecsJsonHandler.handle(action, request, region);
                 default -> null;
             };
         } catch (AwsException e) {
-            return Response.status(e.getHttpStatus())
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(new AwsErrorResponse(e.getErrorCode(), e.getMessage()))
-                    .build();
+            return JsonErrorResponseUtils.createErrorResponse(e);
         } catch (Exception e) {
             LOG.errorf("Error processing %s request", serviceName, e);
-            return Response.status(500)
-                    .type(MediaType.APPLICATION_JSON)
-                    .entity(new AwsErrorResponse("InternalServerError", e.getMessage()))
-                    .build();
+            return JsonErrorResponseUtils.createErrorResponse(e);
         }
     }
+
 }

@@ -4,7 +4,9 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @RegisterForReflection
@@ -28,8 +30,10 @@ public class LambdaFunction {
     private String codeLocalPath;
     private Map<String, String> environment = new HashMap<>();
     private Map<String, String> tags = new HashMap<>();
+    private List<Map<String, Object>> policies = new ArrayList<>();
     private long lastModified;
     private String revisionId;
+    private String version = "$LATEST";
     private LambdaUrlConfig urlConfig;
 
     @JsonIgnore
@@ -89,11 +93,17 @@ public class LambdaFunction {
     public Map<String, String> getTags() { return tags; }
     public void setTags(Map<String, String> tags) { this.tags = tags; }
 
+    public List<Map<String, Object>> getPolicies() { return policies; }
+    public void setPolicies(List<Map<String, Object>> policies) { this.policies = policies; }
+
     public long getLastModified() { return lastModified; }
     public void setLastModified(long lastModified) { this.lastModified = lastModified; }
 
     public String getRevisionId() { return revisionId; }
     public void setRevisionId(String revisionId) { this.revisionId = revisionId; }
+
+    public String getVersion() { return version; }
+    public void setVersion(String version) { this.version = version; }
 
     public LambdaUrlConfig getUrlConfig() { return urlConfig; }
     public void setUrlConfig(LambdaUrlConfig urlConfig) { this.urlConfig = urlConfig; }

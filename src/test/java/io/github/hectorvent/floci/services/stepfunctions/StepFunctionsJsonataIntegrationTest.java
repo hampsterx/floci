@@ -1,15 +1,12 @@
 package io.github.hectorvent.floci.services.stepfunctions;
 
+import io.github.hectorvent.floci.testing.RestAssuredJsonUtils;
 import io.quarkus.test.junit.QuarkusTest;
-import io.restassured.RestAssured;
-import io.restassured.config.EncoderConfig;
-import io.restassured.http.ContentType;
 import io.restassured.response.Response;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.given;
-import static org.hamcrest.Matchers.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 @QuarkusTest
@@ -20,9 +17,7 @@ class StepFunctionsJsonataIntegrationTest {
 
     @BeforeAll
     static void configureRestAssured() {
-        RestAssured.config = RestAssured.config().encoderConfig(
-                EncoderConfig.encoderConfig()
-                        .encodeContentTypeAs(SFN_CONTENT_TYPE, ContentType.TEXT));
+        RestAssuredJsonUtils.configureAwsContentTypes();
     }
 
     @Test
@@ -225,6 +220,65 @@ class StepFunctionsJsonataIntegrationTest {
         String output = waitForExecution(execArn);
         assertTrue(output.contains("key"));
         assertTrue(output.contains("value"));
+    }
+
+    @Test
+    void jsonataPassState_withResult_rejected() {
+        // AWS rejects Result in JSONata states (SCHEMA_VALIDATION_FAILED).
+        // Result is a JSONPath-only field; the JSONata equivalent is Output.
+        String definition = """
+                {
+                    "QueryLanguage": "JSONata",
+                    "StartAt": "SetResult",
+                    "States": {
+                        "SetResult": {
+                            "Type": "Pass",
+                            "Result": {"status": "ok", "code": 200},
+                            "End": true
+                        }
+                    }
+                }
+                """;
+
+        given()
+                .header("X-Amz-Target", "AWSStepFunctions.CreateStateMachine")
+                .contentType(SFN_CONTENT_TYPE)
+                .body(String.format("""
+                        {"name":"jsonata-result-test","definition":%s,"roleArn":"%s","type":"STANDARD"}
+                        """, quote(definition), ROLE_ARN))
+                .when().post("/")
+                .then().statusCode(400);
+    }
+
+    @Test
+    void jsonataPassState_withParameters_rejected() {
+        // AWS rejects Parameters in JSONata states (SCHEMA_VALIDATION_FAILED).
+        // Parameters is a JSONPath-only field; the JSONata equivalent is Arguments.
+        String definition = """
+                {
+                    "QueryLanguage": "JSONata",
+                    "StartAt": "PrepareData",
+                    "States": {
+                        "PrepareData": {
+                            "Type": "Pass",
+                            "Parameters": {
+                                "created_at.$": "$$.Execution.StartTime"
+                            },
+                            "Output": {"processed": true},
+                            "End": true
+                        }
+                    }
+                }
+                """;
+
+        given()
+                .header("X-Amz-Target", "AWSStepFunctions.CreateStateMachine")
+                .contentType(SFN_CONTENT_TYPE)
+                .body(String.format("""
+                        {"name":"jsonata-parameters-test","definition":%s,"roleArn":"%s","type":"STANDARD"}
+                        """, quote(definition), ROLE_ARN))
+                .when().post("/")
+                .then().statusCode(400);
     }
 
     // ──────────────── Helpers ────────────────

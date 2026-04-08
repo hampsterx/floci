@@ -200,4 +200,54 @@ class SecretsManagerServiceTest {
         SecretVersion fetched = service.getSecretValue("my-secret", v1Id, null, REGION);
         assertEquals("v1", fetched.getSecretString());
     }
+
+    @Test
+    void batchGetSecretValue() {
+        service.createSecret("secret1", "value1", null, null, null, null, REGION);
+        service.createSecret("secret2", "value2", null, null, null, null, REGION);
+
+        List<SecretsManagerService.BatchSecretValue> values = service.batchGetSecretValue(
+                List.of("secret1", "secret2"), REGION);
+
+        assertEquals(2, values.size());
+        assertTrue(values.stream().anyMatch(v -> "secret1".equals(v.name()) && "value1".equals(v.secretString())));
+        assertTrue(values.stream().anyMatch(v -> "secret2".equals(v.name()) && "value2".equals(v.secretString())));
+    }
+
+    @Test
+    void batchGetSecretValueSkipsDeleted() {
+        service.createSecret("secret1", "value1", null, null, null, null, REGION);
+        service.createSecret("secret2", "value2", null, null, null, null, REGION);
+        service.deleteSecret("secret1", 7, false, REGION);
+
+        List<SecretsManagerService.BatchSecretValue> values = service.batchGetSecretValue(
+                List.of("secret1", "secret2"), REGION);
+
+        assertEquals(1, values.size());
+        assertEquals("secret2", values.getFirst().name());
+    }
+
+    @Test
+    void batchGetSecretValueThrowsIfNotFound() {
+        service.createSecret("secret1", "value1", null, null, null, null, REGION);
+        assertThrows(AwsException.class, () ->
+                service.batchGetSecretValue(List.of("secret1", "non-existent"), REGION));
+    }
+
+    @Test
+    void kmsKeyIdIsPreserved() {
+        String kmsKeyId = "arn:aws:kms:us-east-1:000000000000:key/my-key";
+        // Signature: name, secretString, secretBinary, description, kmsKeyId, tags, region
+        Secret secret = service.createSecret("kms-secret", "value", null,
+                "desc", kmsKeyId, null, REGION);
+
+        assertEquals(kmsKeyId, secret.getKmsKeyId());
+
+        Secret described = service.describeSecret("kms-secret", REGION);
+        assertEquals(kmsKeyId, described.getKmsKeyId());
+
+        service.updateSecret("kms-secret", "new desc", "arn:aws:kms:us-east-1:000000000000:key/other-key", REGION);
+        Secret updated = service.describeSecret("kms-secret", REGION);
+        assertEquals("arn:aws:kms:us-east-1:000000000000:key/other-key", updated.getKmsKeyId());
+    }
 }

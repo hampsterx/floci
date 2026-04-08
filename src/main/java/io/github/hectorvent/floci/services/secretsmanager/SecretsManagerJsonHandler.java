@@ -44,12 +44,55 @@ public class SecretsManagerJsonHandler {
             case "ListSecretVersionIds" -> handleListSecretVersionIds(request, region);
             case "GetResourcePolicy" -> handleGetResourcePolicy(request, region);
             case "GetRandomPassword" -> handleGetRandomPassword(request, region);
+            case "BatchGetSecretValue" -> handleBatchGetSecretValue(request, region);
             case "DeleteResourcePolicy" -> Response.ok(objectMapper.createObjectNode()).build();
             case "PutResourcePolicy" -> Response.ok(objectMapper.createObjectNode()).build();
             default -> Response.status(400)
                     .entity(new AwsErrorResponse("UnsupportedOperation", "Operation " + action + " is not supported."))
                     .build();
         };
+    }
+
+    private Response handleBatchGetSecretValue(JsonNode request, String region) {
+        if (!request.has("SecretIdList") && !request.has("Filters")) {
+            return Response.status(400)
+                    .entity(new AwsErrorResponse("InvalidParameterException", "You must specify either SecretIdList or Filters."))
+                    .build();
+        }
+
+        List<String> secretIdList = new ArrayList<>();
+        if (request.has("SecretIdList")) {
+            request.path("SecretIdList").forEach(id -> secretIdList.add(id.asText()));
+        }
+
+        // Filters are not fully implemented yet, but for now we only support SecretIdList
+        List<SecretsManagerService.BatchSecretValue> values = service.batchGetSecretValue(secretIdList, region);
+
+        ObjectNode response = objectMapper.createObjectNode();
+        ArrayNode secretValues = objectMapper.createArrayNode();
+        for (SecretsManagerService.BatchSecretValue value : values) {
+            ObjectNode node = objectMapper.createObjectNode();
+            node.put("ARN", value.arn());
+            node.put("Name", value.name());
+            node.put("VersionId", value.versionId());
+            if (value.secretString() != null) {
+                node.put("SecretString", value.secretString());
+            }
+            if (value.secretBinary() != null) {
+                node.put("SecretBinary", value.secretBinary());
+            }
+            if (value.createdDate() != null) {
+                node.put("CreatedDate", value.createdDate().toEpochMilli() / 1000.0);
+            }
+            ArrayNode stages = objectMapper.createArrayNode();
+            if (value.versionStages() != null) {
+                value.versionStages().forEach(stages::add);
+            }
+            node.set("VersionStages", stages);
+            secretValues.add(node);
+        }
+        response.set("SecretValues", secretValues);
+        return Response.ok(response).build();
     }
 
     private Response handleCreateSecret(JsonNode request, String region) {
@@ -127,13 +170,18 @@ public class SecretsManagerJsonHandler {
 
         Secret secret = service.updateSecret(secretId, description, kmsKeyId, region);
 
+        String versionId = null;
         if (secretString != null || secretBinary != null) {
-            service.putSecretValue(secretId, secretString, secretBinary, region);
+            SecretVersion version = service.putSecretValue(secretId, secretString, secretBinary, region);
+            versionId = version.getVersionId();
         }
 
         ObjectNode response = objectMapper.createObjectNode();
         response.put("ARN", secret.getArn());
         response.put("Name", secret.getName());
+        if (versionId != null) {
+            response.put("VersionId", versionId);
+        }
         return Response.ok(response).build();
     }
 
@@ -146,6 +194,9 @@ public class SecretsManagerJsonHandler {
         response.put("Name", secret.getName());
         if (secret.getDescription() != null) {
             response.put("Description", secret.getDescription());
+        }
+        if (secret.getKmsKeyId() != null) {
+            response.put("KmsKeyId", secret.getKmsKeyId());
         }
         response.put("RotationEnabled", secret.isRotationEnabled());
         if (secret.getCreatedDate() != null) {
@@ -196,8 +247,18 @@ public class SecretsManagerJsonHandler {
             if (secret.getDescription() != null) {
                 node.put("Description", secret.getDescription());
             }
+            if (secret.getKmsKeyId() != null) {
+                node.put("KmsKeyId", secret.getKmsKeyId());
+            }
+            node.put("RotationEnabled", secret.isRotationEnabled());
+            if (secret.getCreatedDate() != null) {
+                node.put("CreatedDate", secret.getCreatedDate().toEpochMilli() / 1000.0);
+            }
             if (secret.getLastChangedDate() != null) {
                 node.put("LastChangedDate", secret.getLastChangedDate().toEpochMilli() / 1000.0);
+            }
+            if (secret.getLastAccessedDate() != null) {
+                node.put("LastAccessedDate", secret.getLastAccessedDate().toEpochMilli() / 1000.0);
             }
             ArrayNode tagsArray = objectMapper.createArrayNode();
             if (secret.getTags() != null) {
@@ -325,98 +386,16 @@ public class SecretsManagerJsonHandler {
      * @see <a href="https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetRandomPassword.html">AWS Secrets Manager – GetRandomPassword</a>
      */
     private Response handleGetRandomPassword(JsonNode request, String region) {
-
-        var excludeCharacters = request.get("ExcludeCharacters");
-        var excludeLowerCase = request.get("ExcludeLowercase");
-        var excludeNumbers = request.get("ExcludeNumbers");
-        var excludePunctuation = request.get("ExcludePunctuation");
-        var excludeUpperCase = request.get("ExcludeUppercase");
-        var includeSpace = request.get("IncludeSpace");
-        var passwordLength = request.get("PasswordLength");
-        var requireEachIncludedType = request.get("RequireEachIncludedType");
-
-        int length = (passwordLength != null && !passwordLength.isNull()) ? passwordLength.asInt(32) : 32;
-        if (length < 1 || length > 4096) {
+        try {
+            String password = RandomPasswordGenerator.generate(request);
+            ObjectNode response = objectMapper.createObjectNode();
+            response.put("RandomPassword", password);
+            return Response.ok(response).build();
+        } catch (IllegalArgumentException e) {
             return Response.status(400)
-                    .entity(new AwsErrorResponse("InvalidParameterException", "PasswordLength must be between 1 and 4096."))
+                    .entity(new AwsErrorResponse("InvalidParameterException", e.getMessage()))
                     .build();
         }
-
-        StringBuilder charset = new StringBuilder();
-        if (excludeLowerCase == null || excludeLowerCase.isNull() || !excludeLowerCase.asBoolean()) {
-            charset.append("abcdefghijklmnopqrstuvwxyz");
-        }
-        if (excludeUpperCase == null || excludeUpperCase.isNull() || !excludeUpperCase.asBoolean()) {
-            charset.append("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-        }
-        if (excludeNumbers == null || excludeNumbers.isNull() || !excludeNumbers.asBoolean()) {
-            charset.append("0123456789");
-        }
-        if (excludePunctuation == null || excludePunctuation.isNull() || !excludePunctuation.asBoolean()) {
-            charset.append("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
-        }
-        if (includeSpace != null && !includeSpace.isNull() && includeSpace.asBoolean()) {
-            charset.append(" ");
-        }
-        if (excludeCharacters != null && !excludeCharacters.isNull()) {
-            String excluded = excludeCharacters.asText();
-            for (int i = charset.length() - 1; i >= 0; i--) {
-                if (excluded.indexOf(charset.charAt(i)) >= 0) {
-                    charset.deleteCharAt(i);
-                }
-            }
-        }
-
-        SecureRandom random = new SecureRandom();
-        StringBuilder password = new StringBuilder(length);
-
-        boolean requireEach = requireEachIncludedType == null || requireEachIncludedType.isNull() || requireEachIncludedType.asBoolean();
-        if (requireEach) {
-            List<String> includedTypes = new ArrayList<>();
-            if (excludeLowerCase == null || excludeLowerCase.isNull() || !excludeLowerCase.asBoolean()) {
-                includedTypes.add("abcdefghijklmnopqrstuvwxyz");
-            }
-            if (excludeUpperCase == null || excludeUpperCase.isNull() || !excludeUpperCase.asBoolean()) {
-                includedTypes.add("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
-            }
-            if (excludeNumbers == null || excludeNumbers.isNull() || !excludeNumbers.asBoolean()) {
-                includedTypes.add("0123456789");
-            }
-            if (excludePunctuation == null || excludePunctuation.isNull() || !excludePunctuation.asBoolean()) {
-                includedTypes.add("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~");
-            }
-            if (includeSpace != null && !includeSpace.isNull() && includeSpace.asBoolean()) {
-                includedTypes.add(" ");
-            }
-            if (excludeCharacters != null && !excludeCharacters.isNull()) {
-                String excluded = excludeCharacters.asText();
-                includedTypes = includedTypes.stream()
-                        .map(t -> t.chars().filter(c -> excluded.indexOf(c) < 0)
-                                .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append).toString())
-                        .filter(t -> !t.isEmpty())
-                        .collect(java.util.stream.Collectors.toList());
-            }
-            // Seed one char from each required type
-            for (String type : includedTypes) {
-                password.append(type.charAt(random.nextInt(type.length())));
-            }
-        }
-
-        for (int i = password.length(); i < length; i++) {
-            password.append(charset.charAt(random.nextInt(charset.length())));
-        }
-
-        // Shuffle so required chars aren't always at the start
-        for (int i = length - 1; i > 0; i--) {
-            int j = random.nextInt(i + 1);
-            char tmp = password.charAt(i);
-            password.setCharAt(i, password.charAt(j));
-            password.setCharAt(j, tmp);
-        }
-
-        ObjectNode response = objectMapper.createObjectNode();
-        response.put("RandomPassword", password.toString());
-        return Response.ok(response).build();
     }
 
     private List<Secret.Tag> parseTags(JsonNode request) {

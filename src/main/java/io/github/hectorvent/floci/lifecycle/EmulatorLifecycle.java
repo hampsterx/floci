@@ -7,10 +7,13 @@ import io.github.hectorvent.floci.lifecycle.inithook.InitializationHook;
 import io.github.hectorvent.floci.lifecycle.inithook.InitializationHooksRunner;
 import io.github.hectorvent.floci.services.elasticache.proxy.ElastiCacheProxyManager;
 import io.github.hectorvent.floci.services.rds.proxy.RdsProxyManager;
+import io.quarkus.runtime.Quarkus;
 import io.quarkus.runtime.ShutdownEvent;
 import io.quarkus.runtime.StartupEvent;
+import io.quarkus.vertx.http.HttpServerStart;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.event.ObservesAsync;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
@@ -20,6 +23,7 @@ import java.io.IOException;
 public class EmulatorLifecycle {
 
     private static final Logger LOG = Logger.getLogger(EmulatorLifecycle.class);
+    private static final int HTTP_PORT = 4566;
 
     private final StorageFactory storageFactory;
     private final ServiceRegistry serviceRegistry;
@@ -40,16 +44,33 @@ public class EmulatorLifecycle {
         this.initializationHooksRunner = initializationHooksRunner;
     }
 
-    void onStart(@Observes StartupEvent ignored) throws IOException, InterruptedException {
+    void onStart(@Observes StartupEvent ignored) {
         LOG.info("=== AWS Local Emulator Starting ===");
         LOG.infov("Storage mode: {0}", config.storage().mode());
         LOG.infov("Persistent path: {0}", config.storage().persistentPath());
 
         serviceRegistry.logEnabledServices();
         storageFactory.loadAll();
-        initializationHooksRunner.run(InitializationHook.START);
 
-        LOG.info("=== AWS Local Emulator Ready ===");
+        if (!initializationHooksRunner.hasHooks(InitializationHook.START)) {
+            LOG.info("=== AWS Local Emulator Ready ===");
+        }
+    }
+
+    void onHttpStart(@ObservesAsync HttpServerStart event) {
+        if ((event.options().getPort() == HTTP_PORT) &&
+            initializationHooksRunner.hasHooks(InitializationHook.START)){
+            try {
+                initializationHooksRunner.run(InitializationHook.START);
+                LOG.info("=== AWS Local Emulator Ready ===");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                LOG.error("Startup hook execution interrupted — shutting down", e);
+            } catch (Exception e) {
+                LOG.error("Startup hook execution failed — shutting down", e);
+                Quarkus.asyncExit();
+            }
+        }
     }
 
     void onStop(@Observes ShutdownEvent ignored) throws IOException, InterruptedException {

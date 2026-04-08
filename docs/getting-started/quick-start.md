@@ -15,7 +15,14 @@ This guide gets Floci running and verifies that AWS CLI commands work against it
         ports:
           - "4566:4566"
         volumes:
+          # Local directory bind mount (default)
           - ./data:/app/data
+    
+          # OR named volume (optional):
+          # - floci-data:/app/data
+    
+    # volumes:
+    #   floci-data:
     ```
 
     ```bash
@@ -33,7 +40,14 @@ This guide gets Floci running and verifies that AWS CLI commands work against it
         ports:
           - "4566:4566"
         volumes:
+          # Local directory bind mount (default)
           - ./data:/app/data
+    
+          # OR named volume (optional):
+          # - floci-data:/app/data
+    
+    # volumes:
+    #   floci-data:
     ```
 
     ```bash
@@ -43,7 +57,7 @@ This guide gets Floci running and verifies that AWS CLI commands work against it
 === "Build from source"
 
     ```bash
-    git clone https://github.com/hectorvent/floci.git
+    git clone https://github.com/floci-io/floci.git
     cd floci
     mvn quarkus:dev   # hot reload, port 4566
     ```
