@@ -1,3 +1,34 @@
+# [1.4.0](https://github.com/floci-io/floci/compare/1.3.0...1.4.0) (2026-04-08)
+
+
+### Bug Fixes
+
+* add list_append support to DynamoDB update expressions ([#277](https://github.com/floci-io/floci/issues/277)) ([b723a9c](https://github.com/floci-io/floci/commit/b723a9c519b15372a4dc8f01a434b43e504bbc8d))
+* default shell executable to /bin/sh for Alpine compatibility ([#241](https://github.com/floci-io/floci/issues/241)) ([d02a1d9](https://github.com/floci-io/floci/commit/d02a1d9a13bddd46db5fbe0522a0d96fca0facda))
+* drain warm pool containers on server shutdown ([#274](https://github.com/floci-io/floci/issues/274)) ([caabf46](https://github.com/floci-io/floci/commit/caabf46b1c61f5ce49b109dbbb2b9d8b20d744d6))
+* dynamodb support add function multiple values ([#263](https://github.com/floci-io/floci/issues/263)) ([1ddc8a3](https://github.com/floci-io/floci/commit/1ddc8a32f7523d2c35b861e1987e39b2ff264e26))
+* handle base64-encoded ACM cert imports ([#248](https://github.com/floci-io/floci/issues/248)) ([1391691](https://github.com/floci-io/floci/commit/13916913e8f18f228217620f14609dca3798b3cb))
+* include ProvisionedThroughput in DynamoDB GSI responses ([#273](https://github.com/floci-io/floci/issues/273)) ([399a96d](https://github.com/floci-io/floci/commit/399a96d70c0510a62a69bcfd42cf5566f8718e60))
+* issues 226 227 ([#257](https://github.com/floci-io/floci/issues/257)) ([81f1a01](https://github.com/floci-io/floci/commit/81f1a01c39c090c1a82b71c0c79b0fe50b3831b7))
+* make EmulatorLifecycle use more idiomatic Quarkus code ([#190](https://github.com/floci-io/floci/issues/190)) ([7ea586e](https://github.com/floci-io/floci/commit/7ea586e446ccc89bd38f8ee6d11ba83c9e6f84a3))
+* merge branch 'main' into release/1.x ([1feec3a](https://github.com/floci-io/floci/commit/1feec3a29222adce872ba2926e9935bd7d0f3cdb))
+* removing log file ([17841d2](https://github.com/floci-io/floci/commit/17841d2d5afd7ebea7149f0745a55b3774d86ef0))
+* resolve Cognito auth, token, and user lookup issues ([#218](https://github.com/floci-io/floci/issues/218) [#220](https://github.com/floci-io/floci/issues/220) [#228](https://github.com/floci-io/floci/issues/228) [#229](https://github.com/floci-io/floci/issues/229) [#233](https://github.com/floci-io/floci/issues/233) [#234](https://github.com/floci-io/floci/issues/234) [#235](https://github.com/floci-io/floci/issues/235)) ([#279](https://github.com/floci-io/floci/issues/279)) ([5e8b39c](https://github.com/floci-io/floci/commit/5e8b39c1aaecd738bb9e7ba36580d5c3da89f276))
+* return 400 when encoded s3 copy source is malformed ([#244](https://github.com/floci-io/floci/issues/244)) ([f4f1752](https://github.com/floci-io/floci/commit/f4f1752b0daa61e16cd9aded6443ec355a314b0e))
+* **s3:** enforce presigned POST policy conditions (eq, starts-with, content-type) ([#203](https://github.com/floci-io/floci/issues/203)) ([cd1759a](https://github.com/floci-io/floci/commit/cd1759aebed320939c7b13fce4a98909ed6d2235))
+* **s3:** versioning IsTruncated, PublicAccessBlock, ListObjectsV2 pagination, K8s virtual host routing ([#276](https://github.com/floci-io/floci/issues/276)) ([6d5839b](https://github.com/floci-io/floci/commit/6d5839bec88a38a9690f5111fc8eda1c2def254c))
+
+
+### Features
+
+* add KMS GetKeyPolicy, PutKeyPolicy and fix CreateKey Tags ([#258](https://github.com/floci-io/floci/issues/258) [#259](https://github.com/floci-io/floci/issues/259) [#269](https://github.com/floci-io/floci/issues/269)) ([#280](https://github.com/floci-io/floci/issues/280)) ([4724db9](https://github.com/floci-io/floci/commit/4724db97be2bc719f4d76e0edfc12202cd1d6e21))
+* add SES V2 REST JSON protocol support ([#265](https://github.com/floci-io/floci/issues/265)) ([e7ab687](https://github.com/floci-io/floci/commit/e7ab687a6a066bd38548d3c425243ad5e024840a))
+* **lambda:** add missing runtimes, fix handler validation, long path… ([#256](https://github.com/floci-io/floci/issues/256)) ([0ef6f87](https://github.com/floci-io/floci/commit/0ef6f87cba2880c321c91c3d90d769603511aa56))
+* **scheduler:** add EventBridge Scheduler service ([#260](https://github.com/floci-io/floci/issues/260)) ([48b6ca3](https://github.com/floci-io/floci/commit/48b6ca347583eb6ace95a69797a2688a3d3e953d))
+* **secretsmanager:** add support for BatchGetSecretValue ([#115](https://github.com/floci-io/floci/issues/115)) ([#264](https://github.com/floci-io/floci/issues/264)) ([37026b7](https://github.com/floci-io/floci/commit/37026b75f1bad702aa649e61e188a25cc2fa8924))
+* **sfn:** nested state machine execution and activity support ([#254](https://github.com/floci-io/floci/issues/254), [#91](https://github.com/floci-io/floci/issues/91)) ([#266](https://github.com/floci-io/floci/issues/266)) ([18bee5b](https://github.com/floci-io/floci/commit/18bee5b278aaaed7e018111c6c146051d862511a))
+* use AWS-specific content type within the response of all JSON-based controllers ([#240](https://github.com/floci-io/floci/issues/240)) ([b4afdbb](https://github.com/floci-io/floci/commit/b4afdbb8421f9101eb3c24159443647160b331d5))
+
 # [1.3.0](https://github.com/floci-io/floci/compare/1.2.0...1.3.0) (2026-04-06)
 
 
