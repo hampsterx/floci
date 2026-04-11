@@ -352,7 +352,7 @@ public class CognitoJsonHandler {
         );
         ObjectNode response = objectMapper.createObjectNode();
         response.put("UserConfirmed", "CONFIRMED".equals(user.getUserStatus()));
-        response.put("UserSub", user.getUsername());
+        response.put("UserSub", user.getAttributes().get("sub"));
         ObjectNode delivery = response.putObject("CodeDeliveryDetails");
         delivery.put("AttributeName", "email");
         delivery.put("DeliveryMedium", "EMAIL");

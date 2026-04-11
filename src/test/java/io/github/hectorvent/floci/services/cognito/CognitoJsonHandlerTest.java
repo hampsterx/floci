@@ -37,6 +37,39 @@ class CognitoJsonHandlerTest {
     }
 
     @Test
+    void signUpReturnsGeneratedSubAsUserSub() {
+        ObjectNode poolReq = mapper.createObjectNode();
+        poolReq.put("PoolName", "signup-pool");
+        JsonNode poolBody = (JsonNode) handler.handle("CreateUserPool", poolReq, "us-east-1").getEntity();
+        String poolId = poolBody.get("UserPool").get("Id").asText();
+
+        ObjectNode clientReq = mapper.createObjectNode();
+        clientReq.put("UserPoolId", poolId);
+        clientReq.put("ClientName", "signup-client");
+        JsonNode clientBody = (JsonNode) handler.handle("CreateUserPoolClient", clientReq, "us-east-1").getEntity();
+        String clientId = clientBody.get("UserPoolClient").get("ClientId").asText();
+
+        ObjectNode signUpReq = mapper.createObjectNode();
+        signUpReq.put("ClientId", clientId);
+        signUpReq.put("Username", "test@example.com");
+        signUpReq.put("Password", "Password123!");
+        ArrayNode attrs = signUpReq.putArray("UserAttributes");
+        ObjectNode emailAttr = attrs.addObject();
+        emailAttr.put("Name", "email");
+        emailAttr.put("Value", "test@example.com");
+
+        Response response = handler.handle("SignUp", signUpReq, "us-east-1");
+        assertEquals(200, response.getStatus());
+
+        JsonNode body = (JsonNode) response.getEntity();
+        String userSub = body.get("UserSub").asText();
+        assertNotEquals("test@example.com", userSub,
+                "UserSub must be the generated UUID, not the username");
+        assertTrue(userSub.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"),
+                "UserSub should be a UUID, got: " + userSub);
+    }
+
+    @Test
     void createUserPoolReturnsRichResponse() {
         ObjectNode request = mapper.createObjectNode();
         request.put("PoolName", "test-pool");
