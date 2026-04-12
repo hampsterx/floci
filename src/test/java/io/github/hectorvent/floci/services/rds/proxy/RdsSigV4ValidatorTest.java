@@ -66,4 +66,79 @@ class RdsSigV4ValidatorTest {
 
         assertFalse(validator.validate(token));
     }
+
+    @Test
+    void validateRejectsTamperedSignature() throws Exception {
+        IamService iamService = IamServiceTestHelper.iamServiceWithAccessKey("AKIDRDS", "secret-rds");
+
+        RdsSigV4Validator validator = new RdsSigV4Validator(iamService);
+        String validToken = SigV4TokenTestHelper.createRdsToken(
+                "db.example.local",
+                5432,
+                "admin",
+                "AKIDRDS",
+                "secret-rds",
+                Instant.now().minusSeconds(60),
+                900
+        );
+        String tamperedToken = validToken.replace("DBUser=admin", "DBUser=attacker");
+
+        assertFalse(validator.validate(tamperedToken));
+    }
+
+    @Test
+    void validateRejectsTokenWithUnknownAccessKey() throws Exception {
+        IamService iamService = IamServiceTestHelper.iamServiceWithAccessKey("AKIDRDS", "secret-rds");
+
+        RdsSigV4Validator validator = new RdsSigV4Validator(iamService);
+        String token = SigV4TokenTestHelper.createRdsToken(
+                "db.example.local",
+                5432,
+                "admin",
+                "AKIDUNKNOWN",
+                "wrong-secret",
+                Instant.now().minusSeconds(60),
+                900
+        );
+
+        assertFalse(validator.validate(token));
+    }
+
+    @Test
+    void validateRejectsTokenMissingDbUser() throws Exception {
+        IamService iamService = IamServiceTestHelper.iamServiceWithAccessKey("AKIDRDS", "secret-rds");
+
+        RdsSigV4Validator validator = new RdsSigV4Validator(iamService);
+        String validToken = SigV4TokenTestHelper.createRdsToken(
+                "db.example.local",
+                5432,
+                "admin",
+                "AKIDRDS",
+                "secret-rds",
+                Instant.now().minusSeconds(60),
+                900
+        );
+        String withoutDbUser = validToken.replaceFirst("DBUser=admin&", "");
+
+        assertFalse(validator.validate(withoutDbUser));
+    }
+
+    @Test
+    void validateRejectsTokenMissingSignatureParameter() throws Exception {
+        IamService iamService = IamServiceTestHelper.iamServiceWithAccessKey("AKIDRDS", "secret-rds");
+
+        RdsSigV4Validator validator = new RdsSigV4Validator(iamService);
+        String validToken = SigV4TokenTestHelper.createRdsToken(
+                "db.example.local",
+                5432,
+                "admin",
+                "AKIDRDS",
+                "secret-rds",
+                Instant.now().minusSeconds(60),
+                900
+        );
+        String withoutSignature = validToken.replaceFirst("&X-Amz-Signature=[0-9a-f]+", "");
+
+        assertFalse(validator.validate(withoutSignature));
+    }
 }
