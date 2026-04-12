@@ -270,6 +270,11 @@ class RdsJdbcCompatTest {
                 .masterUserPassword("secret456")
                 .build());
 
+        // Old password must be rejected after modify
+        assertThatThrownBy(() -> openPostgresConnection(USERNAME, PASSWORD))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("password authentication failed");
+
         Connection modifiedPasswordConnection = awaitPostgresConnection(USERNAME, "secret456");
         try {
             assertThat(selectOne(modifiedPasswordConnection)).isEqualTo(1);
