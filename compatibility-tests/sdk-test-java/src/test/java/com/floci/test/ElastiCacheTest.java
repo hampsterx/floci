@@ -108,8 +108,8 @@ class ElastiCacheTest {
                 .build());
 
         assertThat(response.replicationGroups()).hasSize(1);
-        assertThat(response.replicationGroups().getFirst().replicationGroupId()).isEqualTo(groupId);
-        assertThat(response.replicationGroups().getFirst().configurationEndpoint().port()).isEqualTo(firstProxyPort);
+        assertThat(response.replicationGroups().get(0).replicationGroupId()).isEqualTo(groupId);
+        assertThat(response.replicationGroups().get(0).configurationEndpoint().port()).isEqualTo(firstProxyPort);
     }
 
     @Test
