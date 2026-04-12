@@ -183,16 +183,16 @@ public class ApiGatewayV2Service {
         if (space < 0) return false;
         String method = routeKey.substring(0, space);
         String pattern = routeKey.substring(space + 1);
-        if (!method.equalsIgnoreCase(httpMethod)) return false;
+        if (!method.equalsIgnoreCase("ANY") && !method.equalsIgnoreCase(httpMethod)) return false;
 
-        // Build regex from path template: {proxy+} -> .+, {param} -> [^/]+
+        // Build regex from path template: {proxy+} -> .*, {param} -> [^/]+
         // Quote literal segments to avoid regex injection from path patterns
         StringBuilder regex = new StringBuilder("^");
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\{([^}]*)}").matcher(pattern);
         int last = 0;
         while (m.find()) {
             regex.append(Pattern.quote(pattern.substring(last, m.start())));
-            regex.append(m.group(1).endsWith("+") ? ".+" : "[^/]+");
+            regex.append(m.group(1).endsWith("+") ? ".*" : "[^/]+");
             last = m.end();
         }
         regex.append(Pattern.quote(pattern.substring(last)));
