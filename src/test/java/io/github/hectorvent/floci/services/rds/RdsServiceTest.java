@@ -1,7 +1,10 @@
 package io.github.hectorvent.floci.services.rds;
 
 import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.RegionResolver;
+import io.github.hectorvent.floci.services.rds.model.DatabaseEngine;
+import io.github.hectorvent.floci.services.rds.model.DbCluster;
 import io.github.hectorvent.floci.services.rds.container.RdsContainerHandle;
 import io.github.hectorvent.floci.services.rds.container.RdsContainerManager;
 import io.github.hectorvent.floci.services.rds.model.DbInstance;
@@ -75,5 +78,42 @@ class RdsServiceTest {
     void listDbInstancesReturnsEmptyWhenNotFound() {
         Collection<DbInstance> result = rdsService.listDbInstances("nonexistent");
         assertTrue(result.isEmpty());
+    }
+
+    @Test
+    void modifyDbInstanceBlankPasswordDoesNotOverwriteExistingPassword() {
+        rdsService.createDbInstance("mydb", "postgres", "13",
+                "admin", "original-password", "dbname", "db.t3.micro",
+                20, false, null, null);
+
+        DbInstance modified = rdsService.modifyDbInstance("mydb", "   ", null);
+
+        assertEquals("original-password", modified.getMasterPassword());
+        assertFalse(modified.isIamDatabaseAuthenticationEnabled());
+    }
+
+    @Test
+    void modifyDbInstanceCanToggleIamWithoutChangingPassword() {
+        rdsService.createDbInstance("mydb", "postgres", "13",
+                "admin", "original-password", "dbname", "db.t3.micro",
+                20, false, null, null);
+
+        DbInstance modified = rdsService.modifyDbInstance("mydb", null, true);
+
+        assertEquals("original-password", modified.getMasterPassword());
+        assertTrue(modified.isIamDatabaseAuthenticationEnabled());
+    }
+
+    @Test
+    void deleteDbClusterFailsWhenMembersRemain() {
+        DbCluster cluster = rdsService.createDbCluster("cluster1", "postgres", "13",
+                "admin", "password", "dbname", false, null);
+        cluster.getDbClusterMembers().add("instance-1");
+
+        AwsException exception = assertThrows(AwsException.class,
+                () -> rdsService.deleteDbCluster("cluster1"));
+
+        assertEquals("InvalidDBClusterStateFault", exception.getErrorCode());
+        assertTrue(exception.getMessage().contains("still has DB instances"));
     }
 }
