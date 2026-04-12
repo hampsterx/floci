@@ -1,6 +1,7 @@
 package io.github.hectorvent.floci.services.rds;
 
 import io.github.hectorvent.floci.config.EmulatorConfig;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.services.rds.model.DbCluster;
 import io.github.hectorvent.floci.services.rds.model.DbInstance;
 import io.github.hectorvent.floci.services.rds.model.DbInstanceStatus;
@@ -163,20 +164,23 @@ class RdsQueryHandlerTest {
     }
 
     @Test
-    void createDbInstance_unknownEngineGetsGenericDefaultVersion() {
-        DbInstance instance = makeInstance("mydb");
+    void createDbInstance_unknownEngineReturnsInvalidParameterValue() {
+        // Handler defaults version to "1.0" for unknown engines, then the service
+        // rejects the engine. Verify the full error path: version defaulting +
+        // AwsException wrapping into a 400 query error.
         when(service.createDbInstance(eq("mydb"), eq("oracle"), eq("1.0"),
                 eq(null), eq(null), eq(null), eq("db.t3.micro"),
                 eq(20), eq(false), eq(null), eq(null)))
-                .thenReturn(instance);
+                .thenThrow(new AwsException("InvalidParameterValue",
+                        "Unsupported engine: oracle. Supported: postgres, mysql, mariadb.", 400));
 
         MultivaluedMap<String, String> p = params();
         p.add("DBInstanceIdentifier", "mydb");
         p.add("Engine", "oracle");
-        handler.handle("CreateDBInstance", p);
+        Response response = handler.handle("CreateDBInstance", p);
 
-        verify(service).createDbInstance("mydb", "oracle", "1.0",
-                null, null, null, "db.t3.micro", 20, false, null, null);
+        assertEquals(400, response.getStatus());
+        assertTrue(((String) response.getEntity()).contains("InvalidParameterValue"));
     }
 
     @Test
