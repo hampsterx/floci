@@ -4,9 +4,9 @@
 load 'test_helper/common-setup'
 
 setup_file() {
-    export TEST_BUCKET="s3-notif-filter-bucket-$(date +%s)"
-    export TEST_QUEUE="s3-notif-filter-queue-$(date +%s)"
-    export TEST_TOPIC="s3-notif-filter-topic-$(date +%s)"
+    export TEST_BUCKET="$(unique_name s3-notif-filter-bucket)"
+    export TEST_QUEUE="$(unique_name s3-notif-filter-queue)"
+    export TEST_TOPIC="$(unique_name s3-notif-filter-topic)"
     export ACCOUNT_ID="000000000000"
     export QUEUE_ARN="arn:aws:sqs:us-east-1:${ACCOUNT_ID}:${TEST_QUEUE}"
 
