@@ -1605,6 +1605,83 @@ given()
         assertEquals(Long.toString(crc32Of(errorResponse.asByteArray())), errorCrc);
     }
 
+    @Test
+    void updateItemWithSamePartitionKeyButDifferentSortKeyCreatesSeparateItems() {
+        // Reproduces GitHub issue #498: UpdateItem on a table with a sort key
+        // overwrites the existing row instead of creating a new one when the
+        // partition key matches but the sort key differs.
+        String tableName = "CoordinationTable";
+
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.CreateTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "%s",
+                    "KeySchema": [
+                        {"AttributeName": "GroupKey", "KeyType": "HASH"},
+                        {"AttributeName": "Id", "KeyType": "RANGE"}
+                    ],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "GroupKey", "AttributeType": "S"},
+                        {"AttributeName": "Id", "AttributeType": "S"}
+                    ],
+                    "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1}
+                }
+                """.formatted(tableName))
+        .when().post("/")
+        .then().statusCode(200);
+
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateItem")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "%s",
+                    "Key": {"GroupKey": {"S": "leader"}, "Id": {"S": "app1"}},
+                    "UpdateExpression": "SET Owner = :1",
+                    "ExpressionAttributeValues": {":1": {"S": "owner-app1"}}
+                }
+                """.formatted(tableName))
+        .when().post("/")
+        .then().statusCode(200);
+
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.UpdateItem")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {
+                    "TableName": "%s",
+                    "Key": {"GroupKey": {"S": "leader"}, "Id": {"S": "app2"}},
+                    "UpdateExpression": "SET Owner = :1",
+                    "ExpressionAttributeValues": {":1": {"S": "owner-app2"}}
+                }
+                """.formatted(tableName))
+        .when().post("/")
+        .then().statusCode(200);
+
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.Scan")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {"TableName": "%s"}
+                """.formatted(tableName))
+        .when().post("/")
+        .then()
+            .statusCode(200)
+            .body("Count", equalTo(2))
+            .body("ScannedCount", equalTo(2));
+
+        given()
+            .header("X-Amz-Target", "DynamoDB_20120810.DeleteTable")
+            .contentType(DYNAMODB_CONTENT_TYPE)
+            .body("""
+                {"TableName": "%s"}
+                """.formatted(tableName))
+        .when().post("/")
+        .then().statusCode(200);
+    }
+
     private static long crc32Of(byte[] bytes) {
         CRC32 crc = new CRC32();
         crc.update(bytes);

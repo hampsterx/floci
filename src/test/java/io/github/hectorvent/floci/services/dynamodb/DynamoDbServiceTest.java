@@ -1216,6 +1216,83 @@ class DynamoDbServiceTest {
     }
 
     @Test
+    void updateItemWithDifferentSortKeysCreatesSeparateItems() {
+        createOrdersTable();
+
+        ObjectNode key1 = item("customerId", "c1", "orderId", "app1");
+        ObjectNode exprValues = mapper.createObjectNode();
+        exprValues.set(":owner", attributeValue("S", "owner-1"));
+
+        service.updateItem("Orders", key1, null,
+                "SET owner = :owner", null, exprValues, null);
+
+        ObjectNode key2 = item("customerId", "c1", "orderId", "app2");
+        exprValues = mapper.createObjectNode();
+        exprValues.set(":owner", attributeValue("S", "owner-2"));
+
+        service.updateItem("Orders", key2, null,
+                "SET owner = :owner", null, exprValues, null);
+
+        DynamoDbService.ScanResult scanResult = service.scan("Orders", null, null, null, null, null, null);
+        assertEquals(2, scanResult.items().size(),
+                "two items with same partition key but different sort keys must be stored separately");
+
+        JsonNode item1 = service.getItem("Orders", key1);
+        assertNotNull(item1);
+        assertEquals("owner-1", item1.get("owner").get("S").asText());
+
+        JsonNode item2 = service.getItem("Orders", key2);
+        assertNotNull(item2);
+        assertEquals("owner-2", item2.get("owner").get("S").asText());
+    }
+
+    @Test
+    void updateItemMissingSortKeyThrowsValidationException() {
+        createOrdersTable();
+
+        ObjectNode keyMissingSk = item("customerId", "c1");
+        ObjectNode exprValues = mapper.createObjectNode();
+        exprValues.set(":val", attributeValue("S", "test"));
+
+        AwsException ex = assertThrows(AwsException.class, () ->
+                service.updateItem("Orders", keyMissingSk, null,
+                        "SET name = :val", null, exprValues, null));
+        assertEquals("ValidationException", ex.getErrorCode());
+    }
+
+    @Test
+    void getItemMissingSortKeyThrowsValidationException() {
+        createOrdersTable();
+        service.putItem("Orders", item("customerId", "c1", "orderId", "o1", "total", "100"));
+
+        ObjectNode keyMissingSk = item("customerId", "c1");
+        AwsException ex = assertThrows(AwsException.class, () ->
+                service.getItem("Orders", keyMissingSk));
+        assertEquals("ValidationException", ex.getErrorCode());
+    }
+
+    @Test
+    void deleteItemMissingSortKeyThrowsValidationException() {
+        createOrdersTable();
+        service.putItem("Orders", item("customerId", "c1", "orderId", "o1", "total", "100"));
+
+        ObjectNode keyMissingSk = item("customerId", "c1");
+        AwsException ex = assertThrows(AwsException.class, () ->
+                service.deleteItem("Orders", keyMissingSk));
+        assertEquals("ValidationException", ex.getErrorCode());
+    }
+
+    @Test
+    void putItemMissingSortKeyThrowsValidationException() {
+        createOrdersTable();
+
+        ObjectNode itemMissingSk = item("customerId", "c1", "total", "100");
+        AwsException ex = assertThrows(AwsException.class, () ->
+                service.putItem("Orders", itemMissingSk));
+        assertEquals("ValidationException", ex.getErrorCode());
+    }
+
+    @Test
     void updateExpressionAcceptsNewlineBetweenSetAndAdd() {
         // "SET ... \n ADD ..." — previously both clauses were silently dropped:
         // applySetClause greedily consumed ":newName\nADD counter :inc" as the

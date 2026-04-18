@@ -1622,9 +1622,11 @@ public class DynamoDbService {
         String skName = table.getSortKeyName();
         if (skName != null) {
             JsonNode skAttr = item.get(skName);
-            if (skAttr != null) {
-                return pk + "#" + extractScalarValue(skAttr);
+            if (skAttr == null) {
+                throw new AwsException("ValidationException",
+                        "One of the required keys was not given a value", 400);
             }
+            return pk + "#" + extractScalarValue(skAttr);
         }
         return pk;
     }
