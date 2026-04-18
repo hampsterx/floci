@@ -150,7 +150,6 @@ public class ContainerLauncher {
         String shortId = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         String containerName = "floci-" + fn.getFunctionName() + "-" + shortId;
 
-        // Build container spec
         ContainerBuilder.Builder specBuilder = containerBuilder.newContainer(image)
                 .withName(containerName)
                 .withEnv(env)
