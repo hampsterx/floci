@@ -224,13 +224,13 @@ Floci features a flexible storage architecture designed to balance developer pro
 
 | Mode | Behavior | Best for... | Durability |
 |:---:|---|---|:---:|
-| **`memory`** | Entirely in-RAM. Data is lost when the container stops. | Speed, ephemeral testing, CI pipelines. | ❌ None |
+| **`memory`** | **(Default)** Entirely in-RAM. Data is lost when the container stops. | Speed, ephemeral testing, CI pipelines. | ❌ None |
 | **`persistent`** | Data is loaded at startup and flushed to disk on graceful shutdown. | Simple local dev with state preservation. | ⚠️ Medium |
-| **`hybrid`** | **(Default)** In-memory performance with periodic async flushing (every 5s). | The perfect balance of speed and safety. | ✅ Good |
+| **`hybrid`** | In-memory performance with periodic async flushing (every 5s). | The perfect balance of speed and safety. | ✅ Good |
 | **`wal`** | Write-Ahead Log. Every mutation is logged to disk before responding. | Maximum durability for critical state. | 💎 Highest |
 
 > [!TIP]
-> Use **`hybrid`** (default) for a "it just works" experience that feels like production but survives container restarts. For ephemeral integration tests where state doesn't matter, switch to **`memory`** for extreme performance.
+> The default **`memory`** mode is ideal for fast, ephemeral CI pipelines where state doesn't need to survive restarts. Switch to **`hybrid`** for local development when you want state preserved across container restarts without sacrificing performance.
 
 For more details, visit the [Storage Configuration documentation](https://floci.io/floci/configuration/storage/).
 
